@@ -166,11 +166,50 @@ class Config:
     max_video_slowdown: float = 1.15   # (c) stretch video up to hold_end
     audio_stretch_filter: str = "auto"  # auto | rubberband | atempo
 
+    # ---- living hold ----
+    # A long freeze held perfectly still reads as a stall, so the frozen
+    # frame gets a gentle push-in. zoom | none
+    hold_motion: str = "zoom"
+    hold_motion_min_seconds: float = 0.5
+    hold_zoom_max: float = 0.04
+
     # ---- preview render ----
     preview_height: int = 480
     preview_crf: int = 28
     preview_preset: str = "veryfast"
     preview_subtitles: bool = True
+
+    # ---- final render ----
+    final_profile: str = "high"
+    final_gop_divisor: int = 2
+    final_audio_bitrate: str = "320k"
+    final_audio_rate: int = 48000
+
+    # ---- audio mastering ----
+    voice_hp_hz: float = 75.0
+    voice_cut_hz: float = 250.0
+    voice_cut_gain: float = -2.5
+    voice_presence_hz: float = 3000.0
+    voice_presence_gain: float = 2.0
+    deesser_intensity: float = 0.25
+    comp_threshold_db: float = -18.0
+    comp_ratio: float = 2.5
+    comp_attack_ms: float = 10.0
+    comp_release_ms: float = 180.0
+    music_db: float = -22.0
+    music_fade: float = 1.5
+    duck_threshold_db: float = -30.0
+    duck_ratio: float = 8.0
+    duck_attack_ms: float = 20.0
+    duck_release_ms: float = 350.0
+
+    # ---- subtitles ----
+    subtitle_min_seconds: float = 0.8
+
+    # ---- qc ----
+    max_word_drift: float = 0.10
+    qc_max_silence: float = 3.0
+    freeze_warn_seconds: float = 1.5
 
     # ---- audio ----
     target_lufs: float = -14.0
@@ -279,10 +318,42 @@ class Config:
             max_video_slowdown=_float("MAX_VIDEO_SLOWDOWN", 1.15),
             audio_stretch_filter=_str("AUDIO_STRETCH_FILTER", "auto").lower(),
 
+            hold_motion=_str("HOLD_MOTION", "zoom").lower(),
+            hold_motion_min_seconds=_float("HOLD_MOTION_MIN_SECONDS", 0.5),
+            hold_zoom_max=_float("HOLD_ZOOM_MAX", 0.04),
+
             preview_height=_int("PREVIEW_HEIGHT", 480),
             preview_crf=_int("PREVIEW_CRF", 28),
             preview_preset=_str("PREVIEW_PRESET", "veryfast"),
             preview_subtitles=_bool("PREVIEW_SUBTITLES", True),
+
+            final_profile=_str("FINAL_PROFILE", "high"),
+            final_gop_divisor=max(1, _int("FINAL_GOP_DIVISOR", 2)),
+            final_audio_bitrate=_str("FINAL_AUDIO_BITRATE", "320k"),
+            final_audio_rate=_int("FINAL_AUDIO_RATE", 48000),
+
+            voice_hp_hz=_float("VOICE_HP_HZ", 75.0),
+            voice_cut_hz=_float("VOICE_CUT_HZ", 250.0),
+            voice_cut_gain=_float("VOICE_CUT_GAIN", -2.5),
+            voice_presence_hz=_float("VOICE_PRESENCE_HZ", 3000.0),
+            voice_presence_gain=_float("VOICE_PRESENCE_GAIN", 2.0),
+            deesser_intensity=_float("DEESSER_INTENSITY", 0.25),
+            comp_threshold_db=_float("COMP_THRESHOLD_DB", -18.0),
+            comp_ratio=_float("COMP_RATIO", 2.5),
+            comp_attack_ms=_float("COMP_ATTACK_MS", 10.0),
+            comp_release_ms=_float("COMP_RELEASE_MS", 180.0),
+            music_db=_float("MUSIC_DB", -22.0),
+            music_fade=_float("MUSIC_FADE", 1.5),
+            duck_threshold_db=_float("DUCK_THRESHOLD_DB", -30.0),
+            duck_ratio=_float("DUCK_RATIO", 8.0),
+            duck_attack_ms=_float("DUCK_ATTACK_MS", 20.0),
+            duck_release_ms=_float("DUCK_RELEASE_MS", 350.0),
+
+            subtitle_min_seconds=_float("SUBTITLE_MIN_SECONDS", 0.8),
+
+            max_word_drift=_float("MAX_WORD_DRIFT", 0.10),
+            qc_max_silence=_float("QC_MAX_SILENCE", 3.0),
+            freeze_warn_seconds=_float("FREEZE_WARN_SECONDS", 1.5),
 
             target_lufs=_float("TARGET_LUFS", -14.0),
             target_true_peak=_float("TARGET_TRUE_PEAK", -1.5),

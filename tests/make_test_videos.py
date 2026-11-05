@@ -263,6 +263,55 @@ def build_zoom(cfg: Config) -> dict:
     }
 
 
+def build_cuts_with_audio(cfg: Config) -> Path:
+    """cuts.mp4 plus a quiet tone bed.
+
+    The other three videos have no audio at all, which leaves
+    --keep-original-audio with nothing to test. This variant exists purely
+    for that, so the original fixtures and their ground truth stay untouched.
+    """
+    source = MEDIA / "cuts.mp4"
+    out = MEDIA / "cuts_with_audio.mp4"
+    cmd = [
+        cfg.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(source),
+        "-f", "lavfi", "-i", "sine=frequency=180:sample_rate=48000",
+        "-f", "lavfi", "-i", "sine=frequency=270:sample_rate=48000",
+        "-filter_complex",
+        "[1:a][2:a]amix=inputs=2:normalize=1,volume=-26dB[a]",
+        "-map", "0:v", "-map", "[a]", "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "128k", "-shortest", str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(proc.stderr)
+        raise SystemExit("FFmpeg failed for cuts_with_audio.mp4")
+    return out
+
+
+def build_music_bed(cfg: Config, seconds: float = 30.0) -> Path:
+    """A simple pad so the music path can be tested without shipping any
+    copyrighted audio."""
+    out = MEDIA / "music_bed.wav"
+    fade = 2.0
+    cmd = [
+        cfg.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", f"sine=frequency=196:duration={seconds}",
+        "-f", "lavfi", "-i", f"sine=frequency=262:duration={seconds}",
+        "-f", "lavfi", "-i", f"sine=frequency=330:duration={seconds}",
+        "-filter_complex",
+        f"[0][1][2]amix=inputs=3:normalize=1,"
+        f"afade=t=in:st=0:d={fade},"
+        f"afade=t=out:st={seconds - fade}:d={fade},volume=-6dB[a]",
+        "-map", "[a]", "-ar", "48000", str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(proc.stderr)
+        raise SystemExit("FFmpeg failed for music_bed.wav")
+    return out
+
+
 def main() -> int:
     cfg = Config.load()
     MEDIA.mkdir(parents=True, exist_ok=True)
@@ -282,6 +331,12 @@ def main() -> int:
             f"(measured {truth['measured_duration']}s), "
             f"{len(truth['scenes'])} scenes, "
             f"{len(truth['hard_cuts'])} cuts, {len(truth['fades'])} fades")
+
+    extra = build_cuts_with_audio(cfg)
+    log(f"{extra.name}: cuts.mp4 + halki si audio (--keep-original-audio ke liye)")
+
+    bed = build_music_bed(cfg)
+    log(f"{bed.name}: test music bed")
 
     log(f"Sab test videos yahan hain: {MEDIA}")
     return 0

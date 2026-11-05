@@ -70,11 +70,15 @@ Voiceover_Agent/
 │   │   └── verify.py         # [done] ECAPA + faster-whisper gate
 │   ├── voice_stage.py    # [done] 3-pass, memory-safe, cached, best-of-N
 │   ├── align.py          # [done] fit voice to scenes, plan the timeline
-│   ├── preview.py        # [done] fast 480p preview + burned-in subtitles
-│   ├── render.py         # final-quality render (preview.py is the draft)
-│   ├── qc.py             # quality check: drift, clipping, dead air
-│   └── pipeline.py       # orchestrates the phases
-├── run_preview.py        # [done] CLI: --video --script [--draft]
+│   ├── video_graph.py    # [done] THE filter graph; preview + render share it
+│   ├── preview.py        # [done] fast 480p draft
+│   ├── render.py         # [done] final quality, stream-copy when possible
+│   ├── audio_master.py   # [done] voice chain, ducked music, 2-pass loudnorm
+│   ├── subtitles.py      # [done] SRT, sentence breaks, no overlap
+│   ├── qc.py             # [done] measures the finished file
+│   └── pipeline.py       # [done] the whole job + script check
+├── run.py                # [done] CLI: full job, or --check-script
+├── run_preview.py        # [done] CLI: preview only
 ├── tests/
 │   ├── make_test_videos.py  # [done] generates cuts/fades/zoom + truth JSON
 │   ├── media/               # generated test videos (gitignored)
@@ -82,7 +86,8 @@ Voiceover_Agent/
 │   ├── test_scenes.py       # [done] 21/21 checks
 │   ├── test_script_parser.py # [done] 17/17 checks
 │   ├── test_voice_stage.py  # [done] 21/21, mock + real run
-│   ├── test_align.py        # [done] 16/16 across all three videos
+│   ├── test_align.py        # [done] 16/16, plain-freeze path
+│   ├── test_final.py        # [done] 48/48, mastering/subs/living hold/QC
 │   └── scripts/             # sample scripts for end-to-end runs
 ├── input/                # user's video + script + voice sample
 └── outputs/              # rendered results (gitignored)
@@ -332,6 +337,44 @@ Word timings are rebuilt after every change, so subtitles stay exact. Every late
 `split_at` and the outgoing transition kind are stored **on the plan**, not re-derived in the renderer, so the two cannot drift apart.
 
 Tests: `tests/test_align.py`, **16/16** across all three videos — no overlap, `BLOCK_GAP` respected, voice inside its segment, video duration within 1 frame, word timings consistent with the audio, and frozen frames extracted from the rendered preview matching the `hold_end` frame (MAD < 3.4) while being measurably *further* from the blended fade midpoint (margin +30.4).
+
+---
+
+## 4g. Final output, script check and QC
+
+### One graph, two renders
+
+`agent/video_graph.py` is the **only** place a Timeline becomes a filter graph. `preview.py` (480p draft) and `render.py` (final) both call it, differing only in scale and encode settings. A draft that proves sync is worthless if the final render re-times differently — and duplicated graph logic already caused two bugs in §4f, so it is not duplicated again.
+
+`render.py` **stream-copies** the video when no block is re-timed and subtitles are not burned in: nothing needs changing, so re-encoding would only throw quality away.
+
+### Living hold
+
+A freeze held perfectly still reads as a stall. Once a hold exceeds `HOLD_MOTION_MIN_SECONDS` (0.5 s) the frozen frame gets a smoothstep push-in of at most `HOLD_ZOOM_MAX` (4%), built as `trim` one frame → `loop` → `zoompan`.
+
+Where the move ends depends on what follows: into a **hard cut or the end of the video** it keeps pushing in; into a **fade** it is triangular and eases back to exactly 1.0, because the dissolve must begin from the same framing or it visibly jumps. Measured: 4.6 mean-abs-diff across the hold→fade boundary, versus 12.6–14.7 of total travel during the hold itself.
+
+### Script check — run it first, always
+
+`run.py --check-script` loads **no models** and finishes in seconds. It reports per block: words, estimated speech at `NARRATION_WPS`, available time, predicted extension, and how many words to cut. It assumes only the 8% speed-up can help (pause tightening can't be known without audio), so it is deliberately slightly pessimistic.
+
+**This exists because voice generation costs hours on this CPU.** Finding out a script is too long afterwards is the most expensive mistake available. Exit code 3 means some block needs cutting.
+
+### Mastering and QC
+
+Voice chain is light on purpose — high-pass 75 Hz, −2.5 dB at 250 Hz, +2 dB at 3 kHz, de-esser, 2.5:1 compressor. **Two-pass** `loudnorm` to −14 LUFS / −1.5 dBTP; one pass guesses from a running window and misses. Music is looped, faded, set by `MUSIC_DB` and ducked with `sidechaincompress` keyed off the voice.
+
+QC measures the finished mp4, never the plan: loudness, true peak, clipping, duration by **video packet count**, and word drift.
+
+**Word drift gates on the median.** faster-whisper's own timestamps jitter 50–150 ms, so a per-word 0.1 s gate would report Whisper's precision as a defect. Systematic drift — a wrong stretch factor, a bad offset — moves *every* word, which the median catches; outliers are listed as "sun kar check karein" instead of failing. Mock runs emit tones, not speech, so the check reports "not applicable" rather than failing.
+
+**Silence is only a problem inside a block's voice span.** Gaps *between* blocks are by design (§4f never stretches a short voice to fill its scene). An early version flagged those designed gaps because the silence merely touched a block's edge; QC now measures how much of the silence falls *inside* expected speech.
+
+### Subtitles: non-overlap outranks minimum duration
+
+Cues break at sentence ends, cap at `SUBTITLE_MAX_CHARS`, and aim for `SUBTITLE_MIN_SECONDS` on screen. When neighbours sit closer together than the minimum, the cue is pulled earlier into the gap before it; if that is still not enough it takes every frame available and stays short. **Overlapping subtitles are broken; a 0.76 s cue is not.** The test asserts that precise invariant — at least the minimum, *or* provably maximal — rather than a threshold that cannot always hold.
+
+Tests: `tests/test_final.py`, **48/48** mock across four cases plus the real run.
 
 ---
 

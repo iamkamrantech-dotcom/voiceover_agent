@@ -110,6 +110,10 @@ def run_one(name: str, script: str, cfg: Config, log, r: Results) -> None:
     video = MEDIA / f"{name}.mp4"
     cache = cfg.output_dir / "_test_cache" / f"align_{name}"
     cfg.tts_cache_dir = cache
+    # This suite checks the PLAIN freeze path: frames during a hold must be
+    # identical to hold_end. The living-hold (moving) path is deliberately
+    # a separate case, covered by tests/test_final.py.
+    cfg.hold_motion = "none"
 
     detection = detect_scenes(video, cfg, log=log)
     split = parse_script(script, detection.scenes, cfg, log)
