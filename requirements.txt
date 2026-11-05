@@ -1,0 +1,12 @@
+# Voiceover Agent — dependencies
+# Intentionally empty for now. Packages get added phase by phase.
+#
+# Planned (NOT installed yet):
+#   torch / torchaudio   -> CPU build only:
+#                           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#   chatterbox-tts       -> voice cloning + TTS (MIT)
+#   faster-whisper       -> word timings, subtitles, QC
+#   opencv-python        -> scene detection
+#   numpy                -> audio/array work
+#   python-dotenv        -> .env into the Config dataclass
+#   fastapi + uvicorn    -> web app (later phase)

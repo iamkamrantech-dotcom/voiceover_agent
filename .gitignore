@@ -1,0 +1,65 @@
+# --- Virtual environments ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- Secrets / local settings ---
+.env
+.env.local
+*.local
+
+# --- Outputs & work files ---
+outputs/
+output/
+temp/
+tmp/
+work/
+input/
+*.mp4
+*.mkv
+*.mov
+*.wav
+*.mp3
+*.flac
+*.srt
+*.vtt
+!tests/fixtures/**
+
+# --- Model caches / weights ---
+models/
+checkpoints/
+.cache/
+hf_cache/
+huggingface/
+torch_cache/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
