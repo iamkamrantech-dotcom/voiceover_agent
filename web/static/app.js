@@ -199,12 +199,12 @@ async function tick() {
   let s;
   try { s = await get("/api/jobs/" + state.jobId); } catch (e) { return; }
 
+  // textContent, not innerHTML: these strings come from the server and
+  // must never be parsed as markup. Real dash characters, not entities -
+  // textContent shows "&mdash;" literally.
   const queued = s.state === "queued";
   $("p-stage").textContent = queued
-    ? `Qatar mein hai &mdash; number ${s.position}`
-    : (s.detail || s.stage || s.state);
-  $("p-stage").innerHTML = queued
-    ? `Qatar mein hai &mdash; number ${s.position}`
+    ? `Qatar mein hai — number ${s.position}`
     : (s.detail || s.stage || s.state);
 
   let pct = 0;
@@ -264,8 +264,8 @@ async function showResult(s) {
   const div = document.createElement("div");
   div.className = s.result.qc_passed ? "note ok" : "note warn";
   div.textContent = s.result.qc_passed
-    ? "QC pass &mdash; file theek lag rahi hai."
-    : "QC ne kuch masle bataye hain &mdash; report dekh lein.";
+    ? "QC pass — file theek lag rahi hai."
+    : "QC ne kuch masle bataye hain — report dekh lein.";
   note.appendChild(div);
 
   const listen = s.result.listen_to || [];

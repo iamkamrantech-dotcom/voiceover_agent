@@ -342,6 +342,20 @@ if (WEB / "static").is_dir():
     app.mount("/static", StaticFiles(directory=WEB / "static"), name="static")
 
 
+@app.middleware("http")
+async def no_cache_static(request: Request, call_next):
+    """Never let the browser cache the app's own JS/CSS.
+
+    This is a local single-user app that gets edited often; a stale app.js
+    silently serving old behaviour is far more expensive than re-fetching
+    a few KB over localhost.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/static"):
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
 @app.on_event("shutdown")
 def _shutdown() -> None:
     manager.shutdown()
