@@ -109,12 +109,26 @@ class Config:
     tts_cache_dir: Path = PROJECT_ROOT / "outputs/_tts_cache"
     tts_best_of_n: int = 3
     tts_best_of_n_draft: int = 1
+    tts_retry_rounds: int = 2
+    # Chatterbox degrades on long text, so blocks are cut into chunks.
+    tts_max_chunk_chars: int = 250
+    tts_pause_sentence: float = 0.30
+    tts_pause_comma: float = 0.15
+    tts_trim_top_db: int = 40
+
+    # ---- script splitting ----
+    narration_wps: float = 2.5
+    script_overflow_ratio: float = 1.10
 
     # ---- voice converter slot ----
     voice_converter: str = "none"
 
     # ---- similarity qc ----
     min_similarity: float = 70.0
+    # ECAPA needs a few seconds of audio to be meaningful. Measured on one
+    # fixed clip: 1.0s->50%, 1.8s->71%, 2.5s->69%, 3.5s->79%, 5.0s->85%.
+    # Below this length the score is recorded but never used as a gate.
+    min_similarity_seconds: float = 3.5
 
     # ---- faster-whisper ----
     whisper_model: str = "base"
@@ -204,9 +218,18 @@ class Config:
             tts_cache_dir=_path("TTS_CACHE_DIR", "outputs/_tts_cache"),
             tts_best_of_n=max(1, _int("TTS_BEST_OF_N", 3)),
             tts_best_of_n_draft=max(1, _int("TTS_BEST_OF_N_DRAFT", 1)),
+            tts_retry_rounds=max(0, _int("TTS_RETRY_ROUNDS", 2)),
+            tts_max_chunk_chars=_int("TTS_MAX_CHUNK_CHARS", 250),
+            tts_pause_sentence=_float("TTS_PAUSE_SENTENCE", 0.30),
+            tts_pause_comma=_float("TTS_PAUSE_COMMA", 0.15),
+            tts_trim_top_db=_int("TTS_TRIM_TOP_DB", 40),
+
+            narration_wps=_float("NARRATION_WPS", 2.5),
+            script_overflow_ratio=_float("SCRIPT_OVERFLOW_RATIO", 1.10),
 
             voice_converter=_str("VOICE_CONVERTER", "none").lower(),
             min_similarity=_float("MIN_SIMILARITY", 70.0),
+            min_similarity_seconds=_float("MIN_SIMILARITY_SECONDS", 3.5),
 
             whisper_model=_str("WHISPER_MODEL", "base"),
             whisper_compute_type=_str("WHISPER_COMPUTE_TYPE", "int8"),

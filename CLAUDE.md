@@ -62,10 +62,14 @@ Voiceover_Agent/
 │   ├── config.py         # [done] Config dataclass, loads .env
 │   ├── log.py            # [done] Roman Urdu user log + English debug log
 │   ├── scenes.py         # [done] cuts & fades, frame-accurate
-│   ├── script_parser.py  # Scene markers / paragraphs / time-split
-│   ├── tts_chatterbox.py # Voice cloning + speech generation (Synthesizer)
-│   ├── voice_convert.py  # Optional converter slot (see 4c)
-│   ├── align.py          # faster-whisper word timings, fit audio to scenes
+│   ├── script_parser.py  # [done] markers / paragraphs / time-split (DP)
+│   ├── voice/
+│   │   ├── base.py           # [done] Synthesizer/Converter/Verifier + factory
+│   │   ├── chatterbox_synth.py # [done] chunked synthesis, natural pauses
+│   │   ├── mock_synth.py     # [done] fake tones for fast pipeline tests
+│   │   └── verify.py         # [done] ECAPA + faster-whisper gate
+│   ├── voice_stage.py    # [done] 3-pass, memory-safe, cached, best-of-N
+│   ├── align.py          # fit audio to scenes (timings come from voice_stage)
 │   ├── subtitles.py      # SRT / VTT output
 │   ├── render.py         # FFmpeg mux: video + narration + subs
 │   ├── qc.py             # quality check: drift, clipping, dead air
@@ -74,7 +78,9 @@ Voiceover_Agent/
 │   ├── make_test_videos.py  # [done] generates cuts/fades/zoom + truth JSON
 │   ├── media/               # generated test videos (gitignored)
 │   ├── test_voice.py        # [done]
-│   └── test_scenes.py       # [done] 21/21 checks
+│   ├── test_scenes.py       # [done] 21/21 checks
+│   ├── test_script_parser.py # [done] 17/17 checks
+│   └── test_voice_stage.py  # [done] mock + real run
 ├── input/                # user's video + script + voice sample
 └── outputs/              # rendered results (gitignored)
 ```
@@ -246,6 +252,55 @@ Two passes:
 Scene boundary convention: a **cut** ends the scene on the cut frame; a **fade** ends it at the **midpoint**, so scenes stay contiguous with no gaps. `hold_end` is the **last clean frame before the outgoing transition** — for a fade that is the frame before the blend starts. **Freeze on `hold_end` when stretching a scene, never on a blended frame.**
 
 Measured on the generated test videos (`tests/test_scenes.py`, **21/21 pass**): hard cuts exact to the frame on both the plain and the Ken-Burns video, fade midpoints within 1 frame, zero false transitions from zoom.
+
+---
+
+## 4e. Script splitting and the voice stage
+
+### `agent/script_parser.py`
+
+Three methods, chosen in order: **markers** (`Scene 1:`, `[Scene 2]`, `Image 3 -`) → **paragraphs** (only when paragraph count equals scene count) → **time-based DP**.
+
+The DP splits the script into sentences (long ones broken at commas, then hard-wrapped), then fills `dp[k][i]` = cheapest way to cover the first `i` sentences with `k` scenes, where a group's cost is `(speaking_time − screen_time)²` and speaking time is `words / NARRATION_WPS`. Consecutive-only assignment means **order can never go backwards**. Each scene gets at least one sentence whenever there are enough to go round.
+
+A scene with no text of its own **joins the previous block** so narration continues over it; leading scenes with no text **stay silent**, since there is nothing before them to continue. Each block carries `text`, `scene_ids`, `start`, `end`, `prev_text`, `next_text`.
+
+Warns in Roman Urdu when the script needs more than `SCRIPT_OVERFLOW_RATIO` × the video's length at 2.5 words/second.
+
+### `agent/voice_stage.py` — three passes, one model at a time
+
+| Pass | Loads | Does |
+|---|---|---|
+| 1 | synthesizer | N takes per block, `seed = TTS_SEED + take`, each cached, then **freed** |
+| 2 | ECAPA + whisper | score every take, keep the best take **whose words are correct**, keep its word timings, then **freed** |
+| 3 | synthesizer, then verifier | blocks with no correct take get fresh seeds (`+1000 × round`), up to `TTS_RETRY_ROUNDS` |
+
+Cache key = sha1 of text + reference + engine + exaggeration + cfg_weight + temperature + chunking + seed, so **nothing unchanged is ever re-synthesised**.
+
+Chatterbox degrades on long text, so `chatterbox_synth.py` never hands over a whole block: it splits into ≤`TTS_MAX_CHUNK_CHARS` pieces, generates each separately, and joins them with **0.30 s after a full stop, 0.15 s after a comma**, then trims silence **at the block edges only** — pauses inside the block are deliberate.
+
+`mock_synth.py` emits one tone per word plus a sidecar JSON of exact word timings, and `MockVerifier` reads that back. Whisper cannot transcribe tones, so without this the mock path could not exercise pass 2 — with it, the full orchestration (caching, best-of-N, retries, timings) is testable in **0.2 s** instead of hours.
+
+If no take ever passes the word check, the closest-sounding take is kept and a loud Roman Urdu warning tells the user to listen to it. Dropping the block silently would be worse.
+
+### ECAPA similarity is duration-sensitive — do not gate short blocks
+
+Measured by truncating **one fixed clip** (`BEST_NEW.wav`, approved by the client) to different lengths and re-scoring it against the full recording:
+
+| Clip length | Similarity |
+|---|---|
+| 1.0 s | 50.0% |
+| 1.8 s | 70.7% |
+| 2.5 s | 68.5% |
+| 3.5 s | 78.8% |
+| 5.0 s | 85.4% |
+
+**Same audio, same voice.** The score tracks duration, not quality — ECAPA simply has too little to work with on a short clip. Consequences baked into the code:
+
+- `MIN_SIMILARITY` is applied **only** to blocks of at least `MIN_SIMILARITY_SECONDS` (3.5 s). Shorter blocks still get a score, flagged `similarity_reliable=False`, but never fail on it.
+- **Never compare similarity across blocks of different lengths** — a short block will always look worse.
+- Best-of-N ranking *within* a block stays valid: all takes of one block are about the same length, so the comparison is fair.
+- Any future quality report must show block duration next to similarity, or the number misleads.
 
 ---
 
