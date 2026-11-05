@@ -1,12 +1,44 @@
-# Voiceover Agent — dependencies
-# Intentionally empty for now. Packages get added phase by phase.
+# Voiceover Agent — dependencies (Python 3.11, Windows, CPU-only)
 #
-# Planned (NOT installed yet):
-#   torch / torchaudio   -> CPU build only:
-#                           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-#   chatterbox-tts       -> voice cloning + TTS (MIT)
-#   faster-whisper       -> word timings, subtitles, QC
-#   opencv-python        -> scene detection
-#   numpy                -> audio/array work
-#   python-dotenv        -> .env into the Config dataclass
-#   fastapi + uvicorn    -> web app (later phase)
+# IMPORTANT: torch/torchaudio MUST come from the CPU index, otherwise pip may
+# pull a CUDA build (~2.5 GB) that this machine cannot use.
+#
+# Install order that is known to resolve cleanly:
+#
+#   pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+#
+# chatterbox-tts 0.1.7 pins torch==2.6.0 / torchaudio==2.6.0, so installing the
+# CPU wheels first keeps pip from substituting a different build.
+# It also requires the Microsoft Visual C++ 2015-2022 x64 Redistributable:
+#   winget install -e --id Microsoft.VCRedist.2015+.x64
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# ---- Core: voice cloning + TTS ----
+torch==2.6.0+cpu
+torchaudio==2.6.0+cpu
+chatterbox-tts==0.1.7
+
+# ---- Word timings, subtitles, quality check ----
+faster-whisper==1.2.1
+ctranslate2==4.8.5
+
+# ---- Pulled in by the above; pinned so a future resolve stays reproducible ----
+transformers==5.2.0
+tokenizers==0.22.2
+diffusers==0.29.0
+s3tokenizer==0.3.0
+resemble-perth==1.0.1
+safetensors==0.5.3
+librosa==0.11.0
+soundfile==0.14.0
+numpy==1.26.4
+scipy==1.17.1
+onnxruntime==1.31.1
+av==18.1.0
+
+# ---- Still to add in later phases ----
+#   opencv-python     -> scene detection
+#   python-dotenv     -> .env into the Config dataclass
+#   fastapi, uvicorn  -> web app (already present as a chatterbox/gradio dep)

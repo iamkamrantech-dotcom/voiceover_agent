@@ -94,8 +94,20 @@ Voiceover_Agent/
 
 - Install the **CPU build of PyTorch** (`--index-url https://download.pytorch.org/whl/cpu`). Do **not** install CUDA wheels — they would be a ~2.5 GB download that cannot be used here.
 - `DEVICE=cpu` in `.env`. Chatterbox and faster-whisper must both be given `device="cpu"`.
-- faster-whisper on CPU: use `compute_type="int8"` and a small model (`base` or `small`). `large-v3` is too slow on 4 cores.
-- **Chatterbox on CPU is slow** — expect roughly **5–15× slower than real time** (a 1-minute narration can take 5–15 minutes). So:
+- faster-whisper on CPU: use `compute_type="int8"` and a small model (`base` or `small`). `large-v3` is too slow on 4 cores. Measured: `small.en` transcribes at **~0.7× real time** (faster than real time) with accurate word timestamps — cheap enough to run on every scene as a QC pass.
+- **torch requires the MSVC runtime.** A bare Windows install may not have it: `winget install -e --id Microsoft.VCRedist.2015+.x64` (needs admin). Without it `import torch` dies with `OSError: [WinError 126] ... c10.dll`.
+- Model weights live in `~/.cache/huggingface` and total **~7.2 GB** for standard + Turbo + `small.en`. Keep them cached; re-downloading Turbo took ~47 minutes on this connection.
+- **Use Chatterbox Turbo**, not the standard model. Measured on this machine (2026-11-05, 8.5 s of speech, 63 s voice reference):
+
+  | Variant | Generate | Audio out | Speed |
+  |---|---|---|---|
+  | `ChatterboxTTS` (standard) | 93.1 s | 6.0 s | **15.5× slower than real time** |
+  | `ChatterboxTurboTTS` | 21.3 s | 5.1 s | **4.2× slower than real time** |
+
+  Turbo is ~3.7× faster for the same sentence and both transcribed back word-perfect. Import it as `from chatterbox.tts_turbo import ChatterboxTurboTTS` — it is **not** exported from `chatterbox/__init__.py`.
+- **Turbo's API differs**: it ignores `exaggeration`, `cfg_weight` and `min_p` (logs a warning and drops them), and it **asserts the reference clip is longer than 5 s**. Config must not assume those knobs work on Turbo.
+- Both variants output **24 kHz mono float32** — resample to 44.1 kHz at the render stage.
+- **Chatterbox on CPU is still slow** — budget ~4× real time with Turbo (a 10-minute narration ≈ 40 minutes). So:
   - synthesise **per scene/chunk**, not the whole script at once;
   - **cache** generated audio on disk keyed by (text + voice sample + settings) so a re-run never re-synthesises unchanged lines;
   - always show progress in the Roman Urdu log, e.g. `"Scene 3/12 ki awaaz ban rahi hai..."`;
