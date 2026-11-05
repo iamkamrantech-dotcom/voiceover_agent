@@ -45,7 +45,10 @@ scipy==1.17.1
 onnxruntime==1.31.1
 av==18.1.0
 
+# ---- Scene detection / config ----
+opencv-python==4.11.0.86
+python-dotenv==1.2.4
+pillow==12.3.0
+
 # ---- Still to add in later phases ----
-#   opencv-python     -> scene detection
-#   python-dotenv     -> .env into the Config dataclass
 #   fastapi, uvicorn  -> web app (already present as a chatterbox/gradio dep)

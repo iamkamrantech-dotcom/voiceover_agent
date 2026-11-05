@@ -9,6 +9,9 @@ ENV/
 .env.local
 *.local
 
+# --- Generated test media (rebuild with tests/make_test_videos.py) ---
+tests/media/
+
 # --- Outputs & work files ---
 outputs/
 output/

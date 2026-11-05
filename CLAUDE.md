@@ -59,20 +59,22 @@ Voiceover_Agent/
 ├── venv/                 # Python 3.11 (gitignored)
 ├── agent/
 │   ├── __init__.py
-│   ├── config.py         # Config dataclass, loads .env
-│   ├── logger.py         # Roman Urdu user log + English debug log
-│   ├── video_probe.py    # ffprobe: duration, fps, resolution
-│   ├── scene_detect.py   # OpenCV/FFmpeg: find cuts & fades
+│   ├── config.py         # [done] Config dataclass, loads .env
+│   ├── log.py            # [done] Roman Urdu user log + English debug log
+│   ├── scenes.py         # [done] cuts & fades, frame-accurate
 │   ├── script_parser.py  # Scene markers / paragraphs / time-split
-│   ├── tts_chatterbox.py # Voice cloning + speech generation
+│   ├── tts_chatterbox.py # Voice cloning + speech generation (Synthesizer)
+│   ├── voice_convert.py  # Optional converter slot (see 4c)
 │   ├── align.py          # faster-whisper word timings, fit audio to scenes
 │   ├── subtitles.py      # SRT / VTT output
 │   ├── render.py         # FFmpeg mux: video + narration + subs
 │   ├── qc.py             # quality check: drift, clipping, dead air
 │   └── pipeline.py       # orchestrates the phases
 ├── tests/
-│   ├── make_test_video.py
-│   └── test_*.py
+│   ├── make_test_videos.py  # [done] generates cuts/fades/zoom + truth JSON
+│   ├── media/               # generated test videos (gitignored)
+│   ├── test_voice.py        # [done]
+│   └── test_scenes.py       # [done] 21/21 checks
 ├── input/                # user's video + script + voice sample
 └── outputs/              # rendered results (gitignored)
 ```
@@ -227,6 +229,23 @@ Rules that keep the slots swappable:
 6. **One model resident at a time.** Load, use, free with `gc.collect()`. RVC must not be held in memory alongside Chatterbox.
 
 Practical note for RVC: it is a converter, not a synthesizer — it still needs speech as input. Chatterbox stays in the pipeline as the thing that produces words and prosody; RVC would only restyle the timbre.
+
+---
+
+## 4d. Scene detection (`agent/scenes.py`) — how it works and why
+
+Two passes:
+
+1. **Coarse, ~10 fps.** Each sampled frame is compared with one **~0.5 s earlier**, never with its neighbour. Frame-to-frame difference cannot see a crossfade — across 40 ms an 0.8 s fade moves ~5% — but across 0.5 s it is unmistakable. The distance mixes a **colour-histogram** term (blind to zoom and pan, so Ken Burns does not fire) with a **coarse pixel** term on a 32×18 grayscale (catches cuts between images sharing a palette).
+2. **Refine, full frame rate.** For each candidate region, take a clean frame just before (**A**) and just after (**B**), then for every frame measure how far it has travelled from A toward B:
+
+   `alpha = dot(frame − A, B − A) / |B − A|²`
+
+   `alpha` runs 0 → 1 across the transition. **A hard cut jumps 0 → 1 in one frame; a crossfade climbs gradually** — so the *shape* of alpha identifies the kind, and the frame where it crosses 0.5 is a frame-accurate midpoint.
+
+Scene boundary convention: a **cut** ends the scene on the cut frame; a **fade** ends it at the **midpoint**, so scenes stay contiguous with no gaps. `hold_end` is the **last clean frame before the outgoing transition** — for a fade that is the frame before the blend starts. **Freeze on `hold_end` when stretching a scene, never on a blended frame.**
+
+Measured on the generated test videos (`tests/test_scenes.py`, **21/21 pass**): hard cuts exact to the frame on both the plain and the Ken-Burns video, fade midpoints within 1 frame, zero false transitions from zoom.
 
 ---
 
