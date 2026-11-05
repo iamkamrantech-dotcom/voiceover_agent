@@ -69,18 +69,21 @@ Voiceover_Agent/
 │   │   ├── mock_synth.py     # [done] fake tones for fast pipeline tests
 │   │   └── verify.py         # [done] ECAPA + faster-whisper gate
 │   ├── voice_stage.py    # [done] 3-pass, memory-safe, cached, best-of-N
-│   ├── align.py          # fit audio to scenes (timings come from voice_stage)
-│   ├── subtitles.py      # SRT / VTT output
-│   ├── render.py         # FFmpeg mux: video + narration + subs
+│   ├── align.py          # [done] fit voice to scenes, plan the timeline
+│   ├── preview.py        # [done] fast 480p preview + burned-in subtitles
+│   ├── render.py         # final-quality render (preview.py is the draft)
 │   ├── qc.py             # quality check: drift, clipping, dead air
 │   └── pipeline.py       # orchestrates the phases
+├── run_preview.py        # [done] CLI: --video --script [--draft]
 ├── tests/
 │   ├── make_test_videos.py  # [done] generates cuts/fades/zoom + truth JSON
 │   ├── media/               # generated test videos (gitignored)
 │   ├── test_voice.py        # [done]
 │   ├── test_scenes.py       # [done] 21/21 checks
 │   ├── test_script_parser.py # [done] 17/17 checks
-│   └── test_voice_stage.py  # [done] mock + real run
+│   ├── test_voice_stage.py  # [done] 21/21, mock + real run
+│   ├── test_align.py        # [done] 16/16 across all three videos
+│   └── scripts/             # sample scripts for end-to-end runs
 ├── input/                # user's video + script + voice sample
 └── outputs/              # rendered results (gitignored)
 ```
@@ -301,6 +304,34 @@ Measured by truncating **one fixed clip** (`BEST_NEW.wav`, approved by the clien
 - **Never compare similarity across blocks of different lengths** — a short block will always look worse.
 - Best-of-N ranking *within* a block stays valid: all takes of one block are about the same length, so the comparison is fair.
 - Any future quality report must show block duration next to similarity, or the number misleads.
+
+---
+
+## 4f. Alignment (`agent/align.py`) and preview (`agent/preview.py`)
+
+Each block's voice gets a window: its scenes, minus `LEAD_IN` (breath) at the start and `TAIL_OUT` at the end (`TAIL_OUT_FINAL` on the last block), with at least `BLOCK_GAP` of silence before the next block speaks.
+
+**A short voice is never slowed to fill the window.** Silence is fine; stretched speech is not.
+
+When the voice is too long, three fixes in order — cheapest and least audible first:
+
+| | Fix | Limit |
+|---|---|---|
+| a | **Tighten internal pauses** using word timings | never below 0.18 s after a sentence, 0.10 s after a comma |
+| b | **Speed the voice up**, pitch preserved | `MAX_SPEEDUP` = 1.08 (rubberband if available, else atempo) |
+| c | **Extend the video**: slow up to `hold_end`, then freeze on it | `MAX_VIDEO_SLOWDOWN` = 1.15, freeze rounded to whole frames |
+
+Word timings are rebuilt after every change, so subtitles stay exact. Every later block shifts by the extension accumulated before it.
+
+### Two bugs this phase, both worth remembering
+
+**1. The freeze was silently dropped on every hard cut.** For a fade, `split_at` (= `hold_end` + 1 frame) sits inside the block, so the renderer splits it into a slowed/frozen part plus a normal-speed transition tail. For a **hard cut**, `hold_end` is the block's last frame, so `split_at == src_end` and there is no tail — and the code had tied *retiming* to the existence of that tail. Result: hard-cut blocks got no slowdown and no freeze at all. **Retiming always applies to the clean part; the split is only about preserving a transition tail.**
+
+**2. A test that passed for the wrong reason.** The duration check used the *container* duration, which is as long as its longest stream — so a too-short video stream was masked by the full-length audio track, and the check passed while the video was visibly wrong. It now counts **video packets** (`nb_read_packets`) instead. When a timing test passes, confirm it is measuring the stream you think it is.
+
+`split_at` and the outgoing transition kind are stored **on the plan**, not re-derived in the renderer, so the two cannot drift apart.
+
+Tests: `tests/test_align.py`, **16/16** across all three videos — no overlap, `BLOCK_GAP` respected, voice inside its segment, video duration within 1 frame, word timings consistent with the audio, and frozen frames extracted from the rendered preview matching the `hold_end` frame (MAD < 3.4) while being measurably *further* from the blended fade midpoint (margin +30.4).
 
 ---
 

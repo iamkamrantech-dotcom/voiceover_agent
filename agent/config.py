@@ -155,7 +155,22 @@ class Config:
     max_speed: float = 1.12
     lead_in: float = 0.25
     tail_out: float = 0.35
+    tail_out_final: float = 0.60
+    block_gap: float = 0.35
     max_drift: float = 0.40
+    # Fixing an overlong block, cheapest first:
+    max_speedup: float = 1.08          # (b) voice speed-up ceiling
+    pause_tighten_above: float = 0.25  # (a) only pauses longer than this
+    pause_floor_sentence: float = 0.18
+    pause_floor_comma: float = 0.10
+    max_video_slowdown: float = 1.15   # (c) stretch video up to hold_end
+    audio_stretch_filter: str = "auto"  # auto | rubberband | atempo
+
+    # ---- preview render ----
+    preview_height: int = 480
+    preview_crf: int = 28
+    preview_preset: str = "veryfast"
+    preview_subtitles: bool = True
 
     # ---- audio ----
     target_lufs: float = -14.0
@@ -254,7 +269,20 @@ class Config:
             max_speed=_float("MAX_SPEED", 1.12),
             lead_in=_float("LEAD_IN", 0.25),
             tail_out=_float("TAIL_OUT", 0.35),
+            tail_out_final=_float("TAIL_OUT_FINAL", 0.60),
+            block_gap=_float("BLOCK_GAP", 0.35),
             max_drift=_float("MAX_DRIFT", 0.40),
+            max_speedup=_float("MAX_SPEEDUP", 1.08),
+            pause_tighten_above=_float("PAUSE_TIGHTEN_ABOVE", 0.25),
+            pause_floor_sentence=_float("PAUSE_FLOOR_SENTENCE", 0.18),
+            pause_floor_comma=_float("PAUSE_FLOOR_COMMA", 0.10),
+            max_video_slowdown=_float("MAX_VIDEO_SLOWDOWN", 1.15),
+            audio_stretch_filter=_str("AUDIO_STRETCH_FILTER", "auto").lower(),
+
+            preview_height=_int("PREVIEW_HEIGHT", 480),
+            preview_crf=_int("PREVIEW_CRF", 28),
+            preview_preset=_str("PREVIEW_PRESET", "veryfast"),
+            preview_subtitles=_bool("PREVIEW_SUBTITLES", True),
 
             target_lufs=_float("TARGET_LUFS", -14.0),
             target_true_peak=_float("TARGET_TRUE_PEAK", -1.5),
