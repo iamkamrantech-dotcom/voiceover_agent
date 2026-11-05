@@ -24,6 +24,13 @@ chatterbox-tts==0.1.7
 faster-whisper==1.2.1
 ctranslate2==4.8.5
 
+# ---- Speaker similarity QC (tools/voice_similarity.py) ----
+# ECAPA-TDNN. Deliberately independent of Chatterbox's own voice encoder,
+# so the score is not just measuring what the TTS already optimises for.
+speechbrain==1.1.1
+HyperPyYAML==1.2.3
+sentencepiece==0.2.3
+
 # ---- Pulled in by the above; pinned so a future resolve stays reproducible ----
 transformers==5.2.0
 tokenizers==0.22.2

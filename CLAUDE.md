@@ -97,7 +97,8 @@ Voiceover_Agent/
 - faster-whisper on CPU: use `compute_type="int8"` and a small model (`base` or `small`). `large-v3` is too slow on 4 cores. Measured: `small.en` transcribes at **~0.7× real time** (faster than real time) with accurate word timestamps — cheap enough to run on every scene as a QC pass.
 - **torch requires the MSVC runtime.** A bare Windows install may not have it: `winget install -e --id Microsoft.VCRedist.2015+.x64` (needs admin). Without it `import torch` dies with `OSError: [WinError 126] ... c10.dll`.
 - Model weights live in `~/.cache/huggingface` and total **~7.2 GB** for standard + Turbo + `small.en`. Keep them cached; re-downloading Turbo took ~47 minutes on this connection.
-- **Use Chatterbox Turbo**, not the standard model. Measured on this machine (2026-11-05, 8.5 s of speech, 63 s voice reference):
+- **For the client's voice, use the STANDARD model, not Turbo** — see §4b. Turbo is 3.5× faster but sounds measurably less like the client. Speed figures below still apply.
+- Speed measured on this machine (2026-11-05, 8.5 s of speech, 63 s voice reference):
 
   | Variant | Generate | Audio out | Speed |
   |---|---|---|---|
@@ -112,6 +113,47 @@ Voiceover_Agent/
   - **cache** generated audio on disk keyed by (text + voice sample + settings) so a re-run never re-synthesises unchanged lines;
   - always show progress in the Roman Urdu log, e.g. `"Scene 3/12 ki awaaz ban rahi hai..."`;
   - keep a `FAST_TEST=true` mode in `.env` that uses tiny clips so tests don't take an hour.
+
+---
+
+## 4b. Voice matching — the winning setup (measured 2026-11-05)
+
+Run `tools/voice_experiment.py` to reproduce. Similarity = cosine of SpeechBrain
+ECAPA speaker embeddings vs the **full** client recording, as a percentage.
+
+**Winner: `standard` engine + `input/ref_2.wav` + `exaggeration=0.5`, `cfg_weight=0.5`.**
+
+| # | Setup | Similarity | Words | Gen |
+|---|---|---|---|---|
+| 1 | VC on standard ref2 (0.5/0.5) | 78.0% | OK | 110.1 s |
+| 2 | **standard, ref2, 0.5/0.5** | **77.9%** | OK | **75.0 s** |
+| 3 | VC on standard ref2 (0.6/0.3) | 77.4% | OK | 123.9 s |
+| 4 | standard, ref2, 0.6/0.3 | 74.9% | OK | 84.9 s |
+| 5 | standard, ref2, 0.4/0.3 | 74.4% | OK | 83.6 s |
+| 6 | turbo, ref2 | 73.1% | OK | 24.9 s |
+| 7 | turbo, ref1 | 72.1% | OK | 30.6 s |
+| 8 | turbo, ref3 | 67.3% | OK | 22.2 s |
+
+How to read the numbers:
+
+- **~90%** = two clips of the *same speaker* from different parts of one recording (`ref_1` vs `ref_2`/`ref_3` scored 89.2% / 92.9%). **This is the realistic ceiling**, not 96%.
+- **96%** = a clip scored against the recording it was cut from. Upper bound only; ignore it as a target.
+- **78%** = our best clone. Still roughly **12 points short** of a real same-speaker match.
+
+Conclusions:
+
+1. **Standard beats Turbo by ~5 points** on voice likeness. Since the client's voice is the whole point, take the 3.5× speed hit.
+2. **`ChatterboxVC` is not worth it** — +0.1 points for +35 s per clip, i.e. noise. Keep `TTS_USE_VC=false`.
+3. **Reference choice matters** (`ref_2` 73.1% vs `ref_3` 67.3% on Turbo) — so pick the reference deliberately, do not grab the first 15 seconds.
+4. `exaggeration/cfg_weight` of 0.5/0.5 beat both 0.4/0.3 and 0.6/0.3 by ~3 points.
+
+**Caveat:** each setup was generated **once**, and Chatterbox sampling is stochastic (`temperature=0.8`). The ~5-point Standard-vs-Turbo gap is almost certainly real; the 0.1-point gap at the top is definitely not. Repeat runs are needed before trusting any sub-2-point difference.
+
+### Known levers not yet tried (for closing the remaining ~12 points)
+
+- **The standard model only listens to the first 6 s** of the reference for the speaker prompt (`ENC_COND_LEN = 6 * 16 kHz`) and the first 10 s for the decoder (`DEC_COND_LEN`). Our 14 s clips are therefore **mostly ignored** — the *first 6 seconds* must be the client's best, cleanest, most typical speech. (Turbo reads 15 s.)
+- **Best-of-N sampling**: generate each line 3–5× with different seeds, score with ECAPA, keep the best. Costs N× time but needs no new model.
+- A longer/cleaner source recording than the current 62.7 s.
 
 ---
 
