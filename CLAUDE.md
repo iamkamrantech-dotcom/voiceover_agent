@@ -121,7 +121,7 @@ Voiceover_Agent/
 Run `tools/voice_experiment.py` to reproduce. Similarity = cosine of SpeechBrain
 ECAPA speaker embeddings vs the **full** client recording, as a percentage.
 
-**Winner: `standard` engine + `input/ref_2.wav` + `exaggeration=0.5`, `cfg_weight=0.5`.**
+**Winner of this round: `standard` engine + `exaggeration=0.5`, `cfg_weight=0.5`.** (The reference was later changed from `ref_2` to `ref6_3` — see §4b-2.)
 
 | # | Setup | Similarity | Words | Gen |
 |---|---|---|---|---|
@@ -149,11 +149,84 @@ Conclusions:
 
 **Caveat:** each setup was generated **once**, and Chatterbox sampling is stochastic (`temperature=0.8`). The ~5-point Standard-vs-Turbo gap is almost certainly real; the 0.1-point gap at the top is definitely not. Repeat runs are needed before trusting any sub-2-point difference.
 
-### Known levers not yet tried (for closing the remaining ~12 points)
+---
 
-- **The standard model only listens to the first 6 s** of the reference for the speaker prompt (`ENC_COND_LEN = 6 * 16 kHz`) and the first 10 s for the decoder (`DEC_COND_LEN`). Our 14 s clips are therefore **mostly ignored** — the *first 6 seconds* must be the client's best, cleanest, most typical speech. (Turbo reads 15 s.)
-- **Best-of-N sampling**: generate each line 3–5× with different seeds, score with ECAPA, keep the best. Costs N× time but needs no new model.
-- A longer/cleaner source recording than the current 62.7 s.
+## 4b-2. Experiment 2 — reference window and best-of-N (2026-11-05)
+
+Reproduce with `tools/prepare_voice6.py` then `tools/voice_experiment2.py`.
+
+**Step 1 — reference window.** New candidates (`ref6_1..4`) are 10 s clips chosen so their *first 6 seconds* are continuous, clean, on-onset, pitch-stable speech, because that is the only part the standard speaker encoder reads. All five generated at the **same seed (1234)** for a fair comparison:
+
+| Reference | Similarity | From |
+|---|---|---|
+| **ref6_3** | **85.1%** | 29.8–39.8 s |
+| ref6_4 | 80.7% | 44.2–54.2 s |
+| ref6_1 | 80.0% | 0.5–10.5 s |
+| ref_2 (old winner) | 79.3% | 14.5–28.5 s |
+| ref6_2 | 79.2% | 13.5–23.5 s |
+
+**Step 2 — best-of-N on `ref6_3`.** Same text, same reference, four different seeds:
+
+| Seed | Similarity |
+|---|---|
+| 404 | 82.2% |
+| 202 | 77.2% |
+| 303 | 76.4% |
+| 101 | 73.8% |
+
+**min 73.8% · max 82.2% · mean 77.4% · spread 8.4 points**
+
+| Strategy | Expected | Gain | Extra time/line |
+|---|---|---|---|
+| best-of-1 | 77.4% | — | — |
+| best-of-2 | 79.6% | +2.2 | +70 s |
+| **best-of-3** | **81.0%** | **+3.6** | **+141 s** |
+| best-of-4 | 82.2% | +4.8 | +211 s |
+
+### Read these two steps together — step 1 is NOT conclusive
+
+Run-to-run spread on one fixed reference is **8.4 points**, which is *larger* than the 5.9-point spread between the five different references at a fixed seed. Those step-1 numbers are one sample each, so **the reference ranking is confounded by seed luck and is not established**. `ref6_3`'s own five samples (85.1, 82.2, 77.2, 76.4, 73.8) average **78.9%** — statistically indistinguishable from `ref_2`'s 79.3%.
+
+Honest conclusions:
+
+1. **Best-of-N is the only proven lever here.** It is measured within a single reference, so sampling noise cannot explain it. Use `TTS_BEST_OF_N=3`.
+2. **Choosing the reference by its first 6 seconds is well-motivated but unproven.** `ref6_3` is the default because it produced the best single clip and its selection criteria match how the model actually reads the prompt — not because it beat `ref_2` by a trustworthy margin.
+3. **85.1% is a best-of-5 result, not a typical one.** A single take from `ref6_3` averages ~79%. Do not quote 85% as the expected quality.
+4. To settle the reference question properly, run 4–5 seeds × the top 2 references (~12 min on this CPU) and compare the means.
+
+### Levers still untried
+
+- **RVC** trained on a longer recording — see §4c. Most likely route past ~85%.
+- A longer, cleaner source recording than the current 62.7 s.
+- Re-tuning `exaggeration`/`cfg_weight` on the new reference; the 0.5/0.5 win came from experiment 1 on `ref_2` at a single seed each, so it carries the same confound.
+
+---
+
+## 4c. The voice stage must be swappable (two slots, not one)
+
+**An RVC voice-conversion stage, trained on a longer client recording, is planned.** RVC learns the client's timbre from minutes of audio instead of zero-shot cloning from 6 seconds, so it is the most likely route to close the remaining gap to a real same-speaker match. Nothing in the pipeline may assume Chatterbox is the only way audio gets made.
+
+So the voice stage is **two independent slots**, not one:
+
+```
+text ──▶ [ SYNTHESIZER ]──▶ speech ──▶ [ CONVERTER (optional) ]──▶ final audio
+          Chatterbox std                 none (default)
+          Chatterbox turbo               ChatterboxVC
+          (any future TTS)               RVC  <-- planned
+```
+
+Rules that keep the slots swappable:
+
+1. **Two protocols in `agent/`**, each one small:
+   - `Synthesizer`: `synthesize(text: str, out_path: Path) -> SynthResult` — anything that turns text into a wav file.
+   - `VoiceConverter`: `convert(in_path: Path, out_path: Path) -> Path` — anything that changes the voice of an existing wav. **May be `None`.**
+2. **Both are chosen from `.env`** (`TTS_ENGINE`, `VOICE_CONVERTER`) through the `Config` dataclass and built by a factory. No module imports a concrete engine directly; the pipeline only ever sees the protocol.
+3. **The rest of the pipeline only knows about wav files**, never about Chatterbox types, tensors or model objects. Scene fitting, timing, subtitles and render must work unchanged if the synthesizer is replaced.
+4. **The converter is optional and order-fixed**: synthesize first, convert second. A converter must not change the word timing, or alignment done before it becomes invalid — re-run the faster-whisper timing pass *after* conversion.
+5. **Quality gates are engine-agnostic.** `tools/voice_similarity.py` (ECAPA) and the faster-whisper word check score a wav file, so they work on any engine's output and give a directly comparable number. Every new engine gets scored the same way before it is adopted.
+6. **One model resident at a time.** Load, use, free with `gc.collect()`. RVC must not be held in memory alongside Chatterbox.
+
+Practical note for RVC: it is a converter, not a synthesizer — it still needs speech as input. Chatterbox stays in the pipeline as the thing that produces words and prosody; RVC would only restyle the timbre.
 
 ---
 
