@@ -12,6 +12,9 @@ ENV/
 # --- Generated test media (rebuild with tests/make_test_videos.py) ---
 tests/media/
 
+# --- Client voice profiles (private recordings, never committed) ---
+voices/
+
 # --- Outputs & work files ---
 outputs/
 output/

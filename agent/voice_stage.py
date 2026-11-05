@@ -34,6 +34,16 @@ from agent.voice.base import (  # noqa: E402
 )
 
 
+class JobCancelled(Exception):
+    """Raised when a running job is cancelled, so the worker unwinds and
+    frees its model instead of being killed mid-generation."""
+
+
+def _check(cancel) -> None:
+    if cancel is not None and cancel():
+        raise JobCancelled()
+
+
 @dataclass
 class Take:
     seed: int
@@ -100,20 +110,29 @@ def _take_path(cfg: Config, text: str, seed: int, engine: str) -> Path:
 # --------------------------------------------------------------------------
 
 def _generate_round(blocks_todo: list[tuple[Block, list[int]]], cfg: Config,
-                    engine: str, log, total_blocks: int) -> dict[int, list[Take]]:
+                    engine: str, log, total_blocks: int,
+                    progress=None, cancel=None) -> dict[int, list[Take]]:
     """PASS 1 shape: one synthesizer load covering every take it must make."""
     takes: dict[int, list[Take]] = {}
     if not blocks_todo:
         return takes
 
+    _check(cancel)
     synth = make_synthesizer(cfg, engine, log=log)
     synth.load()
     try:
-        for block, seeds in blocks_todo:
+        for position, (block, seeds) in enumerate(blocks_todo):
             made: list[Take] = []
             for i, seed in enumerate(seeds):
+                _check(cancel)
                 path = _take_path(cfg, block.text, seed, engine)
                 human = f"Block {block.index + 1}/{total_blocks}"
+                if progress:
+                    progress(stage="voice", block=block.index + 1,
+                             blocks=total_blocks, take=i + 1, takes=len(seeds),
+                             cached=path.is_file(),
+                             detail=f"Block {block.index + 1}/{total_blocks}: "
+                                    f"take {i + 1}/{len(seeds)}")
                 if path.is_file():
                     log.user(f"{human}: take {i + 1}/{len(seeds)} cache se mil gaya.")
                     import soundfile as sf
@@ -128,6 +147,8 @@ def _generate_round(blocks_todo: list[tuple[Block, list[int]]], cfg: Config,
                 made.append(Take(seed, result.path, result.duration))
             takes[block.index] = made
     finally:
+        # Always free the model, cancelled or not - this machine cannot
+        # afford a leaked Chatterbox.
         synth.free()
     return takes
 
@@ -167,7 +188,7 @@ def _pick(takes: list[Take]) -> tuple[Take | None, int]:
 
 def run_voice_stage(blocks: list[Block], cfg: Config | None = None,
                     engine: str | None = None, best_of: int | None = None,
-                    log=None) -> list[BlockAudio]:
+                    log=None, progress=None, cancel=None) -> list[BlockAudio]:
     cfg = cfg or Config.load()
     log = log or agent_log.get()
     engine = (engine or cfg.tts_engine).lower()
@@ -192,10 +213,14 @@ def run_voice_stage(blocks: list[Block], cfg: Config | None = None,
 
     # ---- PASS 1 ----------------------------------------------------------
     todo = [(b, [base_seed + i for i in range(n_takes)]) for b in spoken]
-    takes = _generate_round(todo, cfg, engine, log, len(spoken))
+    takes = _generate_round(todo, cfg, engine, log, len(spoken),
+                            progress=progress, cancel=cancel)
 
     # ---- PASS 2 ----------------------------------------------------------
+    _check(cancel)
     log.user("Har take ki quality check ho rahi hai...")
+    if progress:
+        progress(stage="verify", detail="Quality check ho raha hai...")
     _verify_round(takes, by_index, cfg, engine, log)
 
     # ---- PASS 3 ----------------------------------------------------------
@@ -207,7 +232,8 @@ def run_voice_stage(blocks: list[Block], cfg: Config | None = None,
                  f"dobara koshish ({round_number}/{cfg.tts_retry_rounds})...")
         offset = base_seed + 1000 * round_number
         retry = [(b, [offset + i for i in range(n_takes)]) for b in failing]
-        extra = _generate_round(retry, cfg, engine, log, len(spoken))
+        extra = _generate_round(retry, cfg, engine, log, len(spoken),
+                                progress=progress, cancel=cancel)
         for index, lst in extra.items():
             takes.setdefault(index, []).extend(lst)
         _verify_round(takes, by_index, cfg, engine, log)

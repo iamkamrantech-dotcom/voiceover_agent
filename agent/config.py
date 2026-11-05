@@ -7,6 +7,7 @@ so the agent runs even with no .env present.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from dataclasses import dataclass, field, fields
@@ -237,9 +238,11 @@ class Config:
     # ---- testing ----
     fast_test: bool = True
 
-    # ---- web app (later) ----
+    # ---- web app ----
     api_host: str = "127.0.0.1"
     api_port: int = 8000
+    app_password: str = ""
+    max_upload_mb: int = 2048
 
     @classmethod
     def load(cls, env_file: Path | str | None = None) -> "Config":
@@ -248,6 +251,28 @@ class Config:
         if env_path.is_file():
             load_dotenv(env_path, override=False)
 
+        cfg = cls._from_env()
+
+        # The voice chosen in the web app wins over VOICE_SAMPLE: it is the
+        # explicit "this is the client's current voice" decision, and .env
+        # would otherwise quietly undo it. Read directly rather than import
+        # voice_profiles, which imports this module.
+        active = PROJECT_ROOT / "voices" / "active.json"
+        if active.is_file():
+            try:
+                data = json.loads(active.read_text(encoding="utf-8"))
+                reference = Path(data.get("reference", ""))
+                if reference.is_file():
+                    cfg.voice_sample = reference
+                source = data.get("source")
+                if source and Path(source).is_file():
+                    cfg.voice_target = Path(source)
+            except Exception:
+                pass
+        return cfg
+
+    @classmethod
+    def _from_env(cls) -> "Config":
         return cls(
             input_video=_path("INPUT_VIDEO", "input/video.mp4"),
             script_file=_path("SCRIPT_FILE", "input/script.txt"),
@@ -378,6 +403,8 @@ class Config:
 
             api_host=_str("API_HOST", "127.0.0.1"),
             api_port=_int("API_PORT", 8000),
+            app_password=_str("APP_PASSWORD", ""),
+            max_upload_mb=_int("MAX_UPLOAD_MB", 2048),
         )
 
     def best_of_n(self, draft: bool = False) -> int:

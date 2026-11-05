@@ -76,7 +76,13 @@ Voiceover_Agent/
 │   ├── audio_master.py   # [done] voice chain, ducked music, 2-pass loudnorm
 │   ├── subtitles.py      # [done] SRT, sentence breaks, no overlap
 │   ├── qc.py             # [done] measures the finished file
-│   └── pipeline.py       # [done] the whole job + script check
+│   ├── pipeline.py       # [done] the whole job + script check
+│   ├── jobs.py           # [done] queue, progress, cancel, resume
+│   └── voice_profiles.py # [done] client voice candidates + history
+├── server.py             # [done] FastAPI web app
+├── web/                  # [done] index.html, login.html, static/
+├── voices/               # client voice profiles (gitignored)
+├── start.bat             # [done] double-click to run everything
 ├── run.py                # [done] CLI: full job, or --check-script
 ├── run_preview.py        # [done] CLI: preview only
 ├── tests/
@@ -88,6 +94,7 @@ Voiceover_Agent/
 │   ├── test_voice_stage.py  # [done] 21/21, mock + real run
 │   ├── test_align.py        # [done] 16/16, plain-freeze path
 │   ├── test_final.py        # [done] 48/48, mastering/subs/living hold/QC
+│   ├── test_server.py       # [done] 23/23, queue/cancel/resume
 │   └── scripts/             # sample scripts for end-to-end runs
 ├── input/                # user's video + script + voice sample
 └── outputs/              # rendered results (gitignored)
@@ -375,6 +382,32 @@ QC measures the finished mp4, never the plan: loudness, true peak, clipping, dur
 Cues break at sentence ends, cap at `SUBTITLE_MAX_CHARS`, and aim for `SUBTITLE_MIN_SECONDS` on screen. When neighbours sit closer together than the minimum, the cue is pulled earlier into the gap before it; if that is still not enough it takes every frame available and stays short. **Overlapping subtitles are broken; a 0.76 s cue is not.** The test asserts that precise invariant — at least the minimum, *or* provably maximal — rather than a threshold that cannot always hold.
 
 Tests: `tests/test_final.py`, **48/48** mock across four cases plus the real run.
+
+---
+
+## 4h. The web app (`server.py` + `web/`)
+
+Double-click `start.bat`: it checks the venv, starts the server and opens the browser.
+
+### The two-step flow exists for one reason
+
+**Step A** (scene detection + script fit check) loads **no models** and takes seconds. The script can be edited on the page and re-checked as often as needed. **Step B** starts the slow job, and shows a time estimate first.
+
+This split is the whole point of the UI. Voice generation costs hours on this CPU; discovering the script was too long afterwards is the most expensive mistake available, so the fit check comes first and is free.
+
+### Jobs
+
+One job runs at a time — a single Chatterbox load already takes most of the RAM — and the rest queue with their position shown. **Every job owns a `status.json`**, which is the source of truth rather than memory, so finished jobs survive a restart and an unfinished one can be resumed. Resume is nearly free: the TTS cache is keyed on text + reference + settings + seed, so voice already made is found, not remade.
+
+**Interrupted is not cancelled.** A job stopped because the server went down is unfinished work that can be resumed; a job the user cancelled was deliberately abandoned. An early version marked both `cancelled`, which hid the fact that the first kind was resumable. `shutdown()` sets `_stop` before `_cancel` precisely so the worker can tell the two apart.
+
+Progress reporting threads a `progress`/`cancel` pair through `run_job` → `run_voice_stage`, so the UI shows stage, block *x* of *y*, take *x* of *n*, and a remaining-time estimate computed from **this run's measured pace** once there are two takes to measure. `outputs/speed_profile.json` keeps a smoothed seconds-per-word per engine so the *first* estimate is based on this machine, not a guess.
+
+### Voice page
+
+Upload a client recording → candidates are cut with the §4b-2 first-6-seconds rule → each clones a test sentence → ECAPA scores them against the full recording → pick one. Profiles live in `voices/<name>/` and are never deleted, so switching back is always possible. The active choice is `voices/active.json`, which **overrides `VOICE_SAMPLE`** in `Config.load()`.
+
+Tests: `tests/test_server.py`, **23/23**, including a mid-job kill and resume that verifies all 8 cached takes are untouched.
 
 ---
 

@@ -50,5 +50,10 @@ opencv-python==4.11.0.86
 python-dotenv==1.2.4
 pillow==12.3.0
 
-# ---- Still to add in later phases ----
-#   fastapi, uvicorn  -> web app (already present as a chatterbox/gradio dep)
+# ---- Web app (server.py) ----
+# These arrive as chatterbox/gradio dependencies, but the app depends on
+# them directly, so they are pinned here rather than left to chance.
+fastapi==0.162.0
+uvicorn==0.54.0
+python-multipart==0.0.33
+httpx==0.28.1

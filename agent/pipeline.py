@@ -33,7 +33,9 @@ from agent.render import render_final  # noqa: E402
 from agent.scenes import detect_scenes  # noqa: E402
 from agent.script_parser import ScriptSplit, parse_script_file  # noqa: E402
 from agent.subtitles import write_srt  # noqa: E402
-from agent.voice_stage import run_voice_stage, save_report  # noqa: E402
+from agent.voice_stage import (  # noqa: E402
+    JobCancelled, _check, run_voice_stage, save_report,
+)
 
 
 @dataclass
@@ -148,11 +150,19 @@ def run_job(video: Path, script: Path, cfg: Config, log,
             music: Path | None = None, keep_original_audio: bool = False,
             burn_subs: bool = False, draft: bool = False,
             engine: str | None = None, make_preview: bool = False,
-            out_path: Path | None = None) -> JobResult:
+            out_path: Path | None = None, job_dir: Path | None = None,
+            progress=None, cancel=None) -> JobResult:
     started = time.perf_counter()
+
+    def step(stage: str, detail: str) -> None:
+        if progress:
+            progress(stage=stage, detail=detail)
+        _check(cancel)
+
     engine = (engine or cfg.tts_engine).lower()
     best_of = cfg.best_of_n(draft=draft)
-    job_dir = make_job_dir(cfg, video.stem)
+    job_dir = Path(job_dir) if job_dir else make_job_dir(cfg, video.stem)
+    job_dir.mkdir(parents=True, exist_ok=True)
     work = job_dir / "_work"
     result = JobResult(job_dir=job_dir)
 
@@ -162,10 +172,12 @@ def run_job(video: Path, script: Path, cfg: Config, log,
     log.user(f"Job folder: {job_dir}")
 
     # 1. scenes
+    step("scenes", "Scene detect ho rahi hain...")
     detection = detect_scenes(video, cfg,
                               keyframe_dir=job_dir / "keyframes", log=log)
 
     # 2. script
+    step("script", "Script scenes par baanti ja rahi hai...")
     split = parse_script_file(script, detection.scenes, cfg, log)
     result.split = split
     for warning in split.warnings:
@@ -173,11 +185,14 @@ def run_job(video: Path, script: Path, cfg: Config, log,
         result.warnings.append(warning)
 
     # 3. voice
+    step("voice", "Awaaz banane ka kaam shuru...")
     audio_blocks = run_voice_stage(split.blocks, cfg, engine=engine,
-                                   best_of=best_of, log=log)
+                                   best_of=best_of, log=log,
+                                   progress=progress, cancel=cancel)
     save_report(audio_blocks, job_dir / "voice_stage.json")
 
     # 4. timeline
+    step("align", "Timeline plan ho rahi hai...")
     timeline = plan_timeline(detection, audio_blocks, cfg,
                              work_dir=work / "align", log=log)
     result.timeline_json = job_dir / "timeline.json"
@@ -187,10 +202,12 @@ def run_job(video: Path, script: Path, cfg: Config, log,
         result.warnings.append(problem)
 
     # 5. subtitles
+    step("subtitles", "Subtitles likhe ja rahe hain...")
     result.subtitles = write_srt(timeline, cfg,
                                  job_dir / f"{video.stem}.srt", log)
 
     # 6. audio master
+    step("audio", "Awaaz master ho rahi hai...")
     voice_track = build_voice_track(timeline, cfg, work / "voice_48k.wav",
                                     log, sample_rate=cfg.final_audio_rate)
     music_source = music
@@ -204,6 +221,7 @@ def run_job(video: Path, script: Path, cfg: Config, log,
                            music=music_source, log=log)
 
     # 7. final render
+    step("render", "Final video render ho rahi hai...")
     final_path = out_path or (job_dir / f"{video.stem}_final.mp4")
     render_final(video, timeline, work / "master.wav", final_path, cfg,
                  subtitle_path=result.subtitles, burn_subs=burn_subs,
@@ -215,6 +233,7 @@ def run_job(video: Path, script: Path, cfg: Config, log,
                        cfg, work_dir=work / "preview", log=log)
 
     # 8. QC
+    step("qc", "Final file ki quality check ho rahi hai...")
     report = run_qc(final_path, timeline, cfg, engine=engine,
                     audio_blocks=audio_blocks, log=log)
     report.save(job_dir / f"{video.stem}_report.json")
