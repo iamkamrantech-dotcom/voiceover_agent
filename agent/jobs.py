@@ -40,6 +40,9 @@ from agent.pipeline import run_job  # noqa: E402
 from agent.revise import BlockChange, ReviseError, run_revision  # noqa: E402
 from agent.voice_stage import JobCancelled  # noqa: E402
 
+# How many times a status write retries its rename before giving up.
+_REPLACE_TRIES = 5
+
 QUEUED = "queued"
 RUNNING = "running"
 DONE = "done"
@@ -324,20 +327,59 @@ class JobManager:
         path = self._status_path(job_id)
         if not path.is_file():
             return None
-        try:
-            return JobStatus.from_dict(
-                json.loads(path.read_text(encoding="utf-8")))
-        except Exception:
-            return None
+        # Under the same lock as write(). Python opens files on Windows
+        # without FILE_SHARE_DELETE, so a read in another thread - an open
+        # SSE stream, the jobs table - is enough to make the writer's
+        # os.replace fail with WinError 5. Readers are cheap here (a few
+        # kB of JSON), so serialising them is the cheapest real fix.
+        with self._lock:
+            try:
+                return JobStatus.from_dict(
+                    json.loads(path.read_text(encoding="utf-8")))
+            except Exception:
+                return None
 
     def write(self, status: JobStatus) -> None:
+        """Save a job's status, atomically and safely from any thread.
+
+        The HTTP thread and the worker both write the same file: the HTTP
+        thread when a job is submitted or renumbered, the worker as it
+        reports progress. Two things make that safe.
+
+        The temp file name is unique per write. A single shared
+        'status.tmp' meant two writers opened the same path, and on
+        Windows os.replace then fails with WinError 5 - which killed a
+        real run: the worker raised while starting a job, the job was
+        already off the queue, and it sat on 'queued' forever with
+        nothing left to run it.
+
+        The write is serialised on the manager lock, so the file and the
+        event published from it stay in the same order for every reader.
+        """
         path = self._status_path(status.id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Write then move, so a crash mid-write cannot corrupt the file.
-        temp = path.with_suffix(".tmp")
         data = status.to_dict()
-        temp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        temp.replace(path)
+        text = json.dumps(data, indent=2)
+        with self._lock:
+            # Write then move, so a crash mid-write cannot corrupt the file.
+            temp = path.with_name(f"status.{uuid.uuid4().hex[:8]}.tmp")
+            try:
+                temp.write_text(text, encoding="utf-8")
+                # Anything outside this process that opens the file for a
+                # moment - a virus scanner, the search indexer - can still
+                # make the rename fail. That is transient, so retry briefly
+                # rather than failing a job over it.
+                for attempt in range(_REPLACE_TRIES):
+                    try:
+                        temp.replace(path)
+                        break
+                    except PermissionError:
+                        if attempt == _REPLACE_TRIES - 1:
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
+            except Exception:
+                temp.unlink(missing_ok=True)
+                raise
         self._publish({"type": "job", "job": data, **self.snapshot()})
 
     def all_jobs(self) -> list[JobStatus]:
@@ -399,10 +441,42 @@ class JobManager:
                 self._run(job_id)
             except Exception:
                 self.log.error(f"job {job_id} crashed:\n{traceback.format_exc()}")
+                # It is off the queue, so nothing will ever run it again. Say
+                # so on the job itself: a crash that leaves a job sitting on
+                # "queued" forever is indistinguishable from a busy machine,
+                # and the one thing the person cannot do is wait it out.
+                self._mark_crashed(job_id)
             finally:
                 with self._lock:
                     self._current = None
-                self._renumber()
+                # Nothing in here may be allowed to escape: this is the only
+                # worker, and an exception leaving the loop body ends it for
+                # the life of the process, with every later job queuing
+                # behind a thread that no longer exists.
+                try:
+                    self._renumber()
+                    # The last status write happened while this job was still
+                    # the current one, so without this the top bar would go on
+                    # saying "Processing" until something else happened.
+                    self._publish({"type": "snapshot", **self.snapshot()})
+                except Exception:
+                    self.log.error("job bookkeeping failed:\n"
+                                   + traceback.format_exc())
+
+    def _mark_crashed(self, job_id: str) -> None:
+        try:
+            status = self.read(job_id)
+            if status is None or status.state in (DONE, CANCELLED):
+                return
+            status.state = FAILED
+            status.finished = datetime.now().isoformat(timespec="seconds")
+            status.error = ("The job stopped unexpectedly. The log has the "
+                            "detail, and it can be resumed.")
+            status.detail = status.error
+            self.write(status)
+        except Exception:
+            self.log.error("could not record the crash:\n"
+                           + traceback.format_exc())
 
     def _renumber(self) -> None:
         with self._lock:

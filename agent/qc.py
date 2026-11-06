@@ -2,7 +2,7 @@
 
 Nothing here trusts the plan: every number is measured off the rendered
 mp4. The point is to catch a bad render before it ships, and to tell the
-user in Roman Urdu which blocks they personally need to listen to.
+user which blocks they personally need to listen to.
 
 On word drift
 -------------
@@ -175,8 +175,8 @@ def run_qc(video_path: Path, timeline: Timeline, cfg: Config | None = None,
         report.duration_actual - report.duration_expected) <= frame * 1.5
     if not report.duration_ok:
         report.problems.append(
-            f"video {report.duration_actual:.3f}s hai lekin timeline "
-            f"{report.duration_expected:.3f}s kehti hai"
+            f"The video is {report.duration_actual:.3f}s but the timeline "
+            f"says {report.duration_expected:.3f}s"
         )
 
     # ---- loudness --------------------------------------------------------
@@ -195,8 +195,8 @@ def run_qc(video_path: Path, timeline: Timeline, cfg: Config | None = None,
         )
         if not report.loudness_ok:
             report.problems.append(
-                f"loudness {report.loudness_i:.1f} LUFS / peak "
-                f"{report.loudness_tp:.1f} dB target se door hai"
+                f"Loudness {report.loudness_i:.1f} LUFS / peak "
+                f"{report.loudness_tp:.1f} dB is off target"
             )
 
     # ---- clipping --------------------------------------------------------
@@ -258,7 +258,7 @@ def run_qc(video_path: Path, timeline: Timeline, cfg: Config | None = None,
                 report.drift_ok = False
                 report.problems.append("no words from the transcript matched the plan")
         except Exception as exc:
-            log.warning(f"drift check nahi chal saka: {exc}")
+            log.warning(f"The drift check could not run: {exc}")
             report.drift_applicable = False
 
     # ---- things a human should listen to ---------------------------------
@@ -288,7 +288,7 @@ def run_qc(video_path: Path, timeline: Timeline, cfg: Config | None = None,
 
 
 def summarise(report: QCReport, cfg: Config, log) -> None:
-    """Short Roman Urdu summary for the person running the job."""
+    """Short summary for the person running the job."""
     log.user("")
     log.user("===== QC REPORT =====")
     log.user(f"Duration    : {report.duration_actual:.2f}s "

@@ -14,8 +14,8 @@ if not exist "venv\Scripts\python.exe" (
 )
 
 echo.
-echo   Voiceover Agent shuru ho raha hai...
-echo   Browser khud khul jayega. Band karne ke liye ye window band kar dein.
+echo   Starting Voiceover Agent...
+echo   The browser opens by itself. Close this window to stop the app.
 echo.
 
 venv\Scripts\python.exe server.py

@@ -61,7 +61,7 @@ Voiceover_Agent/
 ├── agent/
 │   ├── __init__.py
 │   ├── config.py         # [done] Config dataclass, loads .env
-│   ├── log.py            # [done] Roman Urdu user log + English debug log
+│   ├── log.py            # [done] plain user log + English debug log
 │   ├── scenes.py         # [done] cuts & fades, frame-accurate
 │   ├── script_parser.py  # [done] markers / paragraphs / time-split (DP)
 │   ├── voice/
@@ -77,8 +77,12 @@ Voiceover_Agent/
 │   ├── audio_master.py   # [done] voice chain, ducked music, 2-pass loudnorm
 │   ├── subtitles.py      # [done] SRT, sentence breaks, no overlap
 │   ├── qc.py             # [done] measures the finished file
-│   ├── pipeline.py       # [done] the whole job + script check
-│   ├── jobs.py           # [done] queue, progress, cancel, resume
+│   ├── pipeline.py       # [done] the whole job + script check + finish_job
+│   ├── revise.py         # [done] re-do ONE block, keep everything else
+│   ├── versions.py       # [done] v1/v2/v3 history of one job
+│   ├── waveform.py       # [done] peaks for the timeline, cached
+│   ├── settings_schema.py # [done] every setting, its help and its default
+│   ├── jobs.py           # [done] queue, progress, cancel, resume, per-job log
 │   └── voice_profiles.py # [done] client voice candidates + history
 ├── server.py             # [done] FastAPI web app + SSE
 ├── web-ui/               # [done] React + TS + Vite + Tailwind source
@@ -96,8 +100,9 @@ Voiceover_Agent/
 │   ├── test_script_parser.py # [done] 17/17 checks
 │   ├── test_voice_stage.py  # [done] 21/21, mock + real run
 │   ├── test_align.py        # [done] 16/16, plain-freeze path
-│   ├── test_final.py        # [done] 48/48, mastering/subs/living hold/QC
-│   ├── test_server.py       # [done] 23/23, queue/cancel/resume
+│   ├── test_final.py        # [done] 56/57, mastering/subs/living hold/QC (see §4g)
+│   ├── test_server.py       # [done] 45/45, queue/cancel/resume/settings
+│   ├── test_revise.py       # [done] 39/39, one block redone, cache untouched
 │   └── scripts/             # sample scripts for end-to-end runs
 ├── input/                # user's video + script + voice sample
 └── outputs/              # rendered results (gitignored)
@@ -137,7 +142,7 @@ Voiceover_Agent/
 - **Chatterbox on CPU is still slow** — budget ~4× real time with Turbo (a 10-minute narration ≈ 40 minutes). So:
   - synthesise **per scene/chunk**, not the whole script at once;
   - **cache** generated audio on disk keyed by (text + voice sample + settings) so a re-run never re-synthesises unchanged lines;
-  - always show progress in the Roman Urdu log, e.g. `"Scene 3/12 ki awaaz ban rahi hai..."`;
+  - always show progress in the log, e.g. `"Scene 3 of 12: generating the voice..."`;
   - keep a `FAST_TEST=true` mode in `.env` that uses tiny clips so tests don't take an hour.
 
 ---
@@ -283,7 +288,7 @@ The DP splits the script into sentences (long ones broken at commas, then hard-w
 
 A scene with no text of its own **joins the previous block** so narration continues over it; leading scenes with no text **stay silent**, since there is nothing before them to continue. Each block carries `text`, `scene_ids`, `start`, `end`, `prev_text`, `next_text`.
 
-Warns in Roman Urdu when the script needs more than `SCRIPT_OVERFLOW_RATIO` × the video's length at 2.5 words/second.
+Warns when the script needs more than `SCRIPT_OVERFLOW_RATIO` × the video's length at 2.5 words/second.
 
 ### `agent/voice_stage.py` — three passes, one model at a time
 
@@ -299,7 +304,7 @@ Chatterbox degrades on long text, so `chatterbox_synth.py` never hands over a wh
 
 `mock_synth.py` emits one tone per word plus a sidecar JSON of exact word timings, and `MockVerifier` reads that back. Whisper cannot transcribe tones, so without this the mock path could not exercise pass 2 — with it, the full orchestration (caching, best-of-N, retries, timings) is testable in **0.2 s** instead of hours.
 
-If no take ever passes the word check, the closest-sounding take is kept and a loud Roman Urdu warning tells the user to listen to it. Dropping the block silently would be worse.
+If no take ever passes the word check, the closest-sounding take is kept and a loud warning tells the user to listen to it. Dropping the block silently would be worse.
 
 ### ECAPA similarity is duration-sensitive — do not gate short blocks
 
@@ -376,7 +381,7 @@ Voice chain is light on purpose — high-pass 75 Hz, −2.5 dB at 250 Hz, +2 dB 
 
 QC measures the finished mp4, never the plan: loudness, true peak, clipping, duration by **video packet count**, and word drift.
 
-**Word drift gates on the median.** faster-whisper's own timestamps jitter 50–150 ms, so a per-word 0.1 s gate would report Whisper's precision as a defect. Systematic drift — a wrong stretch factor, a bad offset — moves *every* word, which the median catches; outliers are listed as "sun kar check karein" instead of failing. Mock runs emit tones, not speech, so the check reports "not applicable" rather than failing.
+**Word drift gates on the median.** faster-whisper's own timestamps jitter 50–150 ms, so a per-word 0.1 s gate would report Whisper's precision as a defect. Systematic drift — a wrong stretch factor, a bad offset — moves *every* word, which the median catches; outliers are listed as "listen and check" instead of failing. Mock runs emit tones, not speech, so the check reports "not applicable" rather than failing.
 
 **Silence is only a problem inside a block's voice span.** Gaps *between* blocks are by design (§4f never stretches a short voice to fill its scene). An early version flagged those designed gaps because the silence merely touched a block's edge; QC now measures how much of the silence falls *inside* expected speech.
 
@@ -384,7 +389,7 @@ QC measures the finished mp4, never the plan: loudness, true peak, clipping, dur
 
 Cues break at sentence ends, cap at `SUBTITLE_MAX_CHARS`, and aim for `SUBTITLE_MIN_SECONDS` on screen. When neighbours sit closer together than the minimum, the cue is pulled earlier into the gap before it; if that is still not enough it takes every frame available and stays short. **Overlapping subtitles are broken; a 0.76 s cue is not.** The test asserts that precise invariant — at least the minimum, *or* provably maximal — rather than a threshold that cannot always hold.
 
-Tests: `tests/test_final.py`, **48/48** mock across four cases plus the real run.
+Tests: `tests/test_final.py`, **56/57**. Every mock case passes. The one miss is the **real run's integrated loudness** — −15.06 LUFS against the −14 ±0.5 target, i.e. about 1 dB quiet. It is a known, pre-existing tolerance edge, not an 8B regression: `audio_master.py` is byte-identical to 8A and `render.py` changed only the audio codec string. Two things make it unsurprising on this particular check: the test clip is ~19 s, and EBU R128 integrated loudness with gating is unstable on a short, dynamic signal with ducked music, where two-pass `loudnorm`'s pass-1 gain prediction can fall back and land low; real client videos are minutes long and far steadier. Worth tightening in the audio stage separately; it does not affect the 8B feature set.
 
 ---
 
@@ -406,11 +411,29 @@ One job runs at a time — a single Chatterbox load already takes most of the RA
 
 Progress reporting threads a `progress`/`cancel` pair through `run_job` → `run_voice_stage`, so the UI shows stage, block *x* of *y*, take *x* of *n*, and a remaining-time estimate computed from **this run's measured pace** once there are two takes to measure. `outputs/speed_profile.json` keeps a smoothed seconds-per-word per engine so the *first* estimate is based on this machine, not a guess.
 
+### `status.json` is written by two threads — a job once vanished into the queue
+
+Found by the 8B end-to-end run (2026-11-06). The HTTP thread writes a job's status when it is submitted and renumbered; the worker writes the same file as it reports progress. Both wrote through one shared `status.tmp`, so the second `os.replace` hit **`PermissionError: [WinError 5]`**. Measured on this machine: four threads × 60 writes to one file produced **186 failures out of 240**.
+
+The failure mode was the bad part, not the exception. The worker raised while *starting* a job — which had already been popped off the queue — so there was nothing left to run it, and `status.json` still read `queued`. On screen that is **"Waiting in the queue, position 1" forever**, indistinguishable from a busy machine, and the one remedy a person naturally reaches for is the one that cannot work: waiting.
+
+**Readers are half the problem.** Unique temp names fixed writer-versus-writer and the next run failed the same way: Python opens files on Windows without `FILE_SHARE_DELETE`, so one thread merely *reading* `status.json` — an open SSE stream, the jobs table — makes the writer's `os.replace` fail. Measured: three writers against five readers, with unique temp names and no reader lock, **267 failures**. So `read()` takes the same lock as `write()`. `agent/stats.py` still reads the file directly from the HTTP thread, which the retry below covers.
+
+Four changes, and `tests/test_server.py` §12–13 hold each one:
+
+1. **Every write uses a unique temp name** (`status.<hex>.tmp`), removed in a `finally`, and both the write and the read are serialised on the manager lock so the file and the event published from it stay in the same order for every reader. The rename retries a few times with a short backoff, because a virus scanner or the search indexer can hold the file open from outside this process and that is transient, not a reason to fail a job.
+2. **A crash in `_run` marks the job `failed`** with a reason. A job that cannot run must say so; `failed` is also resumable, so nothing is lost.
+3. **The loop's `finally` can no longer kill the worker.** `_renumber()` and the snapshot publish sat outside any `try`, so one exception there would end the only worker thread for the life of the process — and every later job would queue behind a thread that no longer existed, with `start()` declining to help because it had already handed out a thread.
+
 ### Voice page
 
-Upload a client recording → candidates are cut with the §4b-2 first-6-seconds rule → each clones a test sentence → ECAPA scores them against the full recording → pick one. Profiles live in `voices/<name>/` and are never deleted, so switching back is always possible. The active choice is `voices/active.json`, which **overrides `VOICE_SAMPLE`** in `Config.load()`.
+Upload a client recording → candidates are cut with the §4b-2 first-6-seconds rule → each clones a test sentence → ECAPA scores them against the full recording → pick one. Profiles live in `voices/<name>/`. The active choice is `voices/active.json`, which **overrides `VOICE_SAMPLE`** in `Config.load()`.
 
-Tests: `tests/test_server.py`, **23/23**, including a mid-job kill and resume that verifies all 8 cached takes are untouched.
+> **Changed in phase 8B.** Profiles used to be undeletable, so switching back was always possible. The dashboard now offers rename and delete, because a page full of abandoned test recordings is its own problem. **The active profile cannot be deleted** — `delete_profile` refuses it by name with a reason, so the guarantee that still matters (the voice every future job clones cannot vanish under it) is kept by a rule rather than by never deleting anything.
+>
+> **Preparing a voice now goes through the job queue** (`kind="voice"`). It loads Chatterbox and then ECAPA, and running it inline in the HTTP thread could put a second model in memory beside a running job — the one thing §4c forbids. Queued, it reports its three stages, can be cancelled, and cannot collide with a render.
+
+Tests: `tests/test_server.py`, **45/45**, including a mid-job kill and resume that verifies all 8 cached takes are untouched.
 
 ---
 
@@ -446,6 +469,67 @@ Tests: `web-ui/e2e/`, **10/10** Playwright specs against the real server with `T
 
 ---
 
+## 4j. Revisions and versions (phase 8B)
+
+### The problem this exists to solve
+
+A job was all-or-nothing. If block 4 of 40 came out wrong, the only remedy was running the whole video again — hours on this CPU. Yet the pipeline already made the fix cheap: the TTS cache is keyed on text + reference + settings + seed, so re-running touches only what changed. What was missing was an entry point that regenerates **one** block, and any way to pick between takes that were already generated and scored.
+
+### Every take is kept, not just the winner
+
+`voice_stage.py` scored N takes per block and threw N−1 of them away from the record. The wavs were on disk in `outputs/_tts_cache/` the whole time and simply never enumerated. `BlockAudio.takes` now persists each one — seed, path, duration, similarity, words_ok, transcript and word timings — so "choose a different take" costs **no model load and no synthesis at all**, just a re-render.
+
+### Three actions, one engine (`agent/revise.py`)
+
+| Action | Models loaded | Cost |
+|---|---|---|
+| `choose_take` | none | render only |
+| `more_takes` | synthesizer, then verifier, for **one** block | N × one block |
+| `edit_text` | same, new cache keys for that block only | N × one block |
+
+All three then call **`finish_job`** — align → subtitles → master → render → QC, extracted verbatim out of `run_job`. There is no second rendering path: §4f already cost two bugs to duplicated graph logic, so a revision rebuilds the whole video through the same filter graph rather than patching one segment into the old file.
+
+New takes requested from the review panel use their own seed band (`REVIEW_SEED_BASE = 10_000`) so they cannot collide with the retry bands (`+1000 × round`).
+
+### A revision re-opens its own job id
+
+Same id, same folder, same SSE channel, state back to `running` — so the queue indicator, cancel, the stepper and the block grid all work with no second code path, and the single worker still guarantees one model resident at a time. `params["kind"]` picks `run_revision` over `run_job`.
+
+> **`status.json` is read into `JobStatus(**data)` inside a bare `except: return None`.** Any key in the file that is not a declared field made that job **vanish from the dashboard silently**. `from_dict` now drops unknown keys instead, so a status written by a newer build degrades to missing information rather than a missing job.
+
+### Versions
+
+v1 stays exactly where it already was, at the top of the job folder; v2+ live in `versions/vN/`. A job with no `versions.json` gets a v1 entry synthesised from its existing files on first read, so **every job already on disk gained a history for free and nothing moved**. Paths are stored relative to the job dir so the folder can be copied. `delete()` refuses the last remaining version and refuses v1.
+
+Notes are written from the change — *"Block 3: take 2 of 4 chosen"*, *"Block 5: text edited"* — because a list of v1/v2/v3 with no reason attached is not a history.
+
+### Three latent bugs this phase surfaced
+
+1. **The cache key ignored `TTS_TRIM_TOP_DB` and `VOICE_CONVERTER`**, both of which change the audio. Harmless while nothing could edit them — and reachable the moment the Settings page could write them, with the worst possible symptom: silently reusing stale audio. Both are in the key now.
+2. **`timeline.json` pointed at the aligned wavs in `_work/align/`, which the cleanup step deletes.** A finished job's timeline referenced files that no longer existed. The aligned wavs are copied to `<version>/blocks/blockNNN.wav` and the timeline points there — which also gives the review panel the block audio *as it is in the video*, next to the raw take.
+3. **`done_takes` was incremented on cache hits**, so a resumed job reported more takes done than it had (a real job on disk read `done_takes: 8, total_takes: 6`). Cached takes are counted separately and shown as "found in cache".
+
+### How the timeline stays smooth
+
+Three tracks over a ten-minute video, so the obvious implementation stutters:
+
+- the **waveform** is one `<canvas>` sized to the viewport, not the scroll width, redrawn only on zoom, scroll or theme change; peaks are precomputed once (`agent/waveform.py`, 50 buckets/second, ~30 KB for ten minutes) rather than decoded in the browser;
+- the **playhead** is a single absolutely-positioned element written straight from a `requestAnimationFrame` loop via `style.transform` — never through React state, which would re-render three tracks 60 times a second;
+- **thumbnails outside the viewport are not rendered**, and the scroll width is capped at `MAX_WIDTH = 32_000` px so zoom cannot build an element the browser will not composite;
+- colours are read from the CSS tokens at draw time, so both themes work without a second code path.
+
+### Settings
+
+`agent/settings_schema.py` is one table of 64 `SettingDef`s across Voice · Timing and fit · Audio · Output · Security, each with a label, a one-line plain-English explanation, type, default, bounds and whether it is writable. The page renders that table, so **a setting cannot be described on screen in a way that disagrees with what the code does with it**. Defaults being a real map is what makes "reset this setting" possible: reset deletes the line from `.env` rather than writing a literal that would then be wrong if the default ever changes.
+
+Everything safe is editable when idle and **locked with a stated reason while a job runs** — a job reads settings as it goes, so changing one underneath it would build a video half one way and half another. Paths, device and the password value are read-only always. The lock is decided on the server, so the page watches the live queue and re-fetches the moment it empties or fills; otherwise a page opened during a job would stay locked after the job ended, with a reload — that nobody is told to do — the only way out.
+
+### Tests
+
+`tests/test_revise.py`, **39/39**. The ones that matter prove the cost: choosing a take creates and touches **zero** cache files; editing one block's text adds **exactly `best_of`** new wavs and leaves every other take byte-identical (same mtime trick `test_server.py` uses for resume); three versions are kept, each with its own video and QC report.
+
+---
+
 ## 5. Quality bar — what "fits the image perfectly" means
 
 The agent must check and fix, not just generate:
@@ -464,4 +548,4 @@ The agent must check and fix, not just generate:
 - All paths via `pathlib.Path`, never string concatenation.
 - FFmpeg is called through a single wrapper (`agent/ffmpeg_utils.py` or inside `render.py`) — never scattered `subprocess.run` calls.
 - Temporary files go to a configurable work dir, cleaned up unless `KEEP_TEMP=true`.
-- Fail loudly with a clear Roman Urdu message + the English technical detail.
+- Fail loudly with a clear plain-English message + the technical detail.

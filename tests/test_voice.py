@@ -5,8 +5,7 @@ Run from the project root:
     venv\\Scripts\\python.exe tests\\test_voice.py              # standard model
     venv\\Scripts\\python.exe tests\\test_voice.py --model both # standard + turbo
 
-User-facing messages are in simple Roman Urdu (project rule); code and
-comments stay English.
+User-facing messages are plain English, sentence case (project rule).
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ TURBO_MIN_REF_SECONDS = 5.0
 
 
 def log(msg: str) -> None:
-    """User-facing log line, Roman Urdu."""
+    """User-facing log line."""
     print(f"[agent] {msg}", flush=True)
 
 

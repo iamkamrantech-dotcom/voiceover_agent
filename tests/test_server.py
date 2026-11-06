@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -366,10 +367,77 @@ def main() -> int:
         voice_profiles.set_active(active_before["profile"],
                                   active_before["candidate"])
     else:
-        voice_profiles.ACTIVE_FILE.unlink(missing_ok=True)
+        voice_profiles.active_file().unlink(missing_ok=True)
     removed = client.delete("/api/voice/test profile renamed")
     r.add("voice deleted", "200 + folder gone", str(removed.status_code),
           removed.status_code == 200 and not moved.exists())
+
+    # ---- 12. two threads writing one status.json -------------------------
+    # The HTTP thread writes a job's status when it is submitted and
+    # renumbered; the worker writes the same file as it reports progress.
+    # They used to share one 'status.tmp', and on Windows the second
+    # os.replace fails with WinError 5. That is not theoretical: it killed
+    # a real run, the job came off the queue before it crashed, and it
+    # then sat on "queued" forever with nothing left to run it.
+    manager = server.manager
+    racer = manager.read(job_id)
+    errors: list[str] = []
+
+    def hammer() -> None:
+        for _ in range(60):
+            try:
+                manager.write(racer)
+            except Exception as exc:        # noqa: BLE001 - that is the point
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+    # Readers matter as much as writers. Python opens files on Windows
+    # without FILE_SHARE_DELETE, so an open SSE stream reading status.json
+    # is on its own enough to make the writer's os.replace fail - which is
+    # exactly how this broke the second time, after unique temp names had
+    # already fixed the writer-versus-writer half.
+    def reader() -> None:
+        for _ in range(60):
+            try:
+                manager.read(job_id)
+            except Exception as exc:        # noqa: BLE001 - that is the point
+                errors.append(f"read {type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=hammer) for _ in range(4)]
+    threads += [threading.Thread(target=reader) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    r.add("concurrent status writes", "no errors",
+          errors[0][:28] if errors else "240 writes, 240 reads", not errors)
+    after = manager.read(job_id)
+    r.add("status survives the race", "still valid json",
+          after.state if after else "unreadable",
+          after is not None and after.id == job_id)
+    leftovers = list(manager.job_dir(job_id).glob("status.*.tmp"))
+    r.add("no temp files left behind", "0 temps", f"{len(leftovers)} temps",
+          not leftovers)
+
+    # ---- 13. a crash in the worker does not strand the job ---------------
+    # A job is popped off the queue before it runs, so if the run raises
+    # there is nothing left to pick it up. It must say so rather than
+    # sit on "queued", which is indistinguishable from a busy machine.
+    stranded = manager.submit("crash test", {"kind": "video", "video": "",
+                                             "script": ""})
+    deadline = time.time() + 30
+    state = ""
+    while time.time() < deadline:
+        current = manager.read(stranded)
+        state = current.state if current else ""
+        if state in ("failed", "done", "cancelled"):
+            break
+        time.sleep(0.2)
+    r.add("crashed job reports failure", "failed", state or "still queued",
+          state == "failed")
+    r.add("worker survives a crash", "thread alive",
+          "alive" if manager._worker and manager._worker.is_alive() else "dead",
+          bool(manager._worker and manager._worker.is_alive()))
 
     server.manager.shutdown(wait=3)
 

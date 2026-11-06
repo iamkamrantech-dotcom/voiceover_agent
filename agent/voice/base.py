@@ -101,7 +101,7 @@ def make_synthesizer(cfg: Config, name: str | None = None,
         return ChatterboxSynthesizer(cfg, variant=engine, log=log)
 
     raise ValueError(
-        f"TTS_ENGINE '{engine}' pehchana nahi gaya. "
+        f"TTS_ENGINE '{engine}' is not recognised. "
         f"Use: standard | turbo | mock"
     )
 
