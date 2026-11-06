@@ -111,19 +111,19 @@ def script_check_table(split: ScriptSplit, rows: list[ScriptCheckRow],
         "=" * 100,
         f"  SCRIPT CHECK   ({split.method} split, {len(rows)} block)",
         "=" * 100,
-        f"  {'#':<4}{'scenes':<9}{'waqt':>14}{'alfaaz':>8}"
-        f"{'bolne mein':>12}{'jagah hai':>11}{'barhana':>9}  kya karein",
+        f"  {'#':<4}{'scenes':<9}{'time':>14}{'words':>8}"
+        f"{'speech':>12}{'available':>11}{'extend':>9}  action",
         "  " + "-" * 96,
     ]
     for row in rows:
         when = f"{row.start:.1f}-{row.end:.1f}s"
         scenes = ",".join(str(i) for i in row.scene_ids)
         if row.cut_words:
-            advice = f"~{row.cut_words} alfaaz kam karein"
+            advice = f"Cut about {row.cut_words} words"
         elif row.extension > 0.05:
-            advice = "theek hai (thora extend hoga)"
+            advice = "Fits, slight extension"
         else:
-            advice = "theek hai"
+            advice = "Fits"
         lines.append(
             f"  {row.block:<4}{scenes:<9}{when:>14}{row.words:>8}"
             f"{row.estimated:>11.1f}s{row.available:>10.1f}s"
@@ -133,10 +133,10 @@ def script_check_table(split: ScriptSplit, rows: list[ScriptCheckRow],
     total_cut = sum(r.cut_words for r in rows)
     lines.append("  " + "-" * 96)
     if total_cut:
-        lines.append(f"  Kul mila kar lagbhag {total_cut} alfaaz kam karne "
-                     f"chahiye taake video zyada na kheenchni pare.")
+        lines.append(f"  Cut about {total_cut} words in total so the video "
+                     f"does not have to stretch.")
     else:
-        lines.append("  Script video mein theek baith rahi hai.")
+        lines.append("  The script fits the video.")
     for warning in split.warnings:
         lines.append(f"  NOTE: {warning}")
     return "\n".join(lines)
@@ -166,18 +166,18 @@ def run_job(video: Path, script: Path, cfg: Config, log,
     work = job_dir / "_work"
     result = JobResult(job_dir=job_dir)
 
-    log.user(f"Job shuru: {video.name} + {script.name}")
+    log.user(f"Starting job: {video.name} + {script.name}")
     log.user(f"Engine: {engine}, best-of-{best_of}"
              + (" (draft)" if draft else ""))
     log.user(f"Job folder: {job_dir}")
 
     # 1. scenes
-    step("scenes", "Scene detect ho rahi hain...")
+    step("scenes", "Detecting scenes...")
     detection = detect_scenes(video, cfg,
                               keyframe_dir=job_dir / "keyframes", log=log)
 
     # 2. script
-    step("script", "Script scenes par baanti ja rahi hai...")
+    step("script", "Splitting the script across scenes...")
     split = parse_script_file(script, detection.scenes, cfg, log)
     result.split = split
     for warning in split.warnings:
@@ -185,14 +185,14 @@ def run_job(video: Path, script: Path, cfg: Config, log,
         result.warnings.append(warning)
 
     # 3. voice
-    step("voice", "Awaaz banane ka kaam shuru...")
+    step("voice", "Generating narration...")
     audio_blocks = run_voice_stage(split.blocks, cfg, engine=engine,
                                    best_of=best_of, log=log,
                                    progress=progress, cancel=cancel)
     save_report(audio_blocks, job_dir / "voice_stage.json")
 
     # 4. timeline
-    step("align", "Timeline plan ho rahi hai...")
+    step("align", "Planning timeline...")
     timeline = plan_timeline(detection, audio_blocks, cfg,
                              work_dir=work / "align", log=log)
     result.timeline_json = job_dir / "timeline.json"
@@ -202,26 +202,26 @@ def run_job(video: Path, script: Path, cfg: Config, log,
         result.warnings.append(problem)
 
     # 5. subtitles
-    step("subtitles", "Subtitles likhe ja rahe hain...")
+    step("subtitles", "Writing subtitles...")
     result.subtitles = write_srt(timeline, cfg,
                                  job_dir / f"{video.stem}.srt", log)
 
     # 6. audio master
-    step("audio", "Awaaz master ho rahi hai...")
+    step("audio", "Mastering audio...")
     voice_track = build_voice_track(timeline, cfg, work / "voice_48k.wav",
                                     log, sample_rate=cfg.final_audio_rate)
     music_source = music
     if keep_original_audio:
         if music is not None:
-            log.warning("--music aur --keep-original-audio dono diye gaye - "
-                        "video ki apni audio use ho rahi hai.")
+            log.warning("Both --music and --keep-original-audio were given, "
+                        "using the video's own audio.")
         music_source = video
     master_result = master(voice_track, work / "master.wav",
                            timeline.output_duration, cfg,
                            music=music_source, log=log)
 
     # 7. final render
-    step("render", "Final video render ho rahi hai...")
+    step("render", "Rendering final video...")
     final_path = out_path or (job_dir / f"{video.stem}_final.mp4")
     render_final(video, timeline, work / "master.wav", final_path, cfg,
                  subtitle_path=result.subtitles, burn_subs=burn_subs,
@@ -233,7 +233,7 @@ def run_job(video: Path, script: Path, cfg: Config, log,
                        cfg, work_dir=work / "preview", log=log)
 
     # 8. QC
-    step("qc", "Final file ki quality check ho rahi hai...")
+    step("qc", "Running final checks...")
     report = run_qc(final_path, timeline, cfg, engine=engine,
                     audio_blocks=audio_blocks, log=log)
     report.save(job_dir / f"{video.stem}_report.json")
@@ -246,5 +246,5 @@ def run_job(video: Path, script: Path, cfg: Config, log,
         shutil.rmtree(work, ignore_errors=True)
 
     result.seconds = time.perf_counter() - started
-    log.user(f"Job mukammal: {result.seconds:.1f} second mein.")
+    log.user(f"Job complete in {result.seconds:.1f}s.")
     return result

@@ -86,17 +86,17 @@ def synthesize(label: str, out_path: Path, voice_sample: Path | None) -> TtsResu
     else:
         from chatterbox.tts import ChatterboxTTS as Model
 
-    log(f"{label}: model load ho raha hai (pehli baar download hoga, sabar karein)...")
+    log(f"{label}: loading model (first run downloads it)...")
     t0 = time.perf_counter()
     model = Model.from_pretrained(device="cpu")
     load_seconds = time.perf_counter() - t0
-    log(f"{label}: model load ho gaya ({load_seconds:.1f} second).")
+    log(f"{label}: model loaded in {load_seconds:.1f}s.")
 
     kwargs: dict = {}
     if voice_sample is not None:
         kwargs["audio_prompt_path"] = str(voice_sample)
 
-    log(f"{label}: awaaz ban rahi hai, CPU par ye slow hai...")
+    log(f"{label}: generating narration, slow on CPU...")
     t0 = time.perf_counter()
     with torch.no_grad():
         wav = model.generate(SENTENCE, **kwargs)
@@ -106,7 +106,7 @@ def synthesize(label: str, out_path: Path, voice_sample: Path | None) -> TtsResu
     torchaudio.save(str(out_path), wav, model.sr)
 
     audio_seconds = wav.shape[-1] / model.sr
-    log(f"{label}: audio save ho gaya -> {out_path}")
+    log(f"{label}: audio saved to {out_path}")
 
     # Free memory before the next variant loads.
     del model
@@ -117,7 +117,7 @@ def transcribe(wav_path: Path) -> tuple[str, list, float, float]:
     """faster-whisper small.en, int8, CPU. Returns transcript, words, load+run times."""
     from faster_whisper import WhisperModel
 
-    log("Whisper model load ho raha hai (small.en, int8, CPU)...")
+    log("Loading Whisper (small.en, int8, CPU)...")
     t0 = time.perf_counter()
     model = WhisperModel(
         "small.en",
@@ -127,7 +127,7 @@ def transcribe(wav_path: Path) -> tuple[str, list, float, float]:
     )
     load_seconds = time.perf_counter() - t0
 
-    log(f"Transcript nikala ja raha hai: {wav_path.name}")
+    log(f"Transcribing {wav_path.name}")
     t0 = time.perf_counter()
     segments, _info = model.transcribe(
         str(wav_path),
@@ -163,19 +163,19 @@ def main() -> int:
 
     log(f"torch {torch.__version__} | CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
-        log("GPU mila hai - lekin ye test CPU par hi chalega.")
+        log("A GPU is present, but this test runs on CPU anyway.")
     else:
-        log("Koi NVIDIA GPU nahi hai, sab kuch CPU par chalega.")
+        log("No NVIDIA GPU, everything runs on CPU.")
 
     voice_sample = find_voice_sample()
     ref_seconds = None
     if voice_sample is not None:
         ref_seconds = ref_duration_seconds(voice_sample)
         dur_txt = f"{ref_seconds:.1f}s" if ref_seconds else "lambai maloom nahi"
-        log(f"Voice reference mil gaya: {voice_sample.name} ({dur_txt}) - isi ko clone karenge.")
+        log(f"Voice reference found: {voice_sample.name} ({dur_txt}), cloning this.")
     else:
-        log("Koi voice sample nahi mila (input/ khali hai) - DEFAULT awaaz use ho rahi hai.")
-        log("Apni awaaz clone karne ke liye input/voice_sample.wav rakhein (7-20 second saaf audio).")
+        log("No voice sample found (input/ is empty), using the DEFAULT voice.")
+        log("Put 7-20 seconds of clean audio in input/voice_sample.wav to clone a voice.")
 
     wanted = ["standard", "turbo"] if args.model == "both" else [args.model]
 
@@ -183,8 +183,8 @@ def main() -> int:
     turbo_sample = voice_sample
     if voice_sample is not None and ref_seconds is not None and ref_seconds <= TURBO_MIN_REF_SECONDS:
         log(
-            f"Warning: Turbo ko {TURBO_MIN_REF_SECONDS:.0f}s se lamba sample chahiye, "
-            f"aapka {ref_seconds:.1f}s hai - Turbo default awaaz use karega."
+            f"Warning: Turbo needs a sample longer than {TURBO_MIN_REF_SECONDS:.0f}s, "
+            f"yours is {ref_seconds:.1f}s, so Turbo will use its default voice."
         )
         turbo_sample = None
 
@@ -195,10 +195,10 @@ def main() -> int:
         try:
             results.append(synthesize(label, OUTPUT_DIR / out_name, sample))
         except Exception as exc:  # keep going so one broken variant does not kill the test
-            log(f"PROBLEM: {label} model fail ho gaya -> {type(exc).__name__}: {exc}")
+            log(f"PROBLEM: {label} model failed -> {type(exc).__name__}: {exc}")
 
     if not results:
-        log("Koi bhi model nahi chala. Test fail.")
+        log("No model ran. Test failed.")
         return 1
 
     print()
@@ -220,7 +220,7 @@ def main() -> int:
         try:
             text, words, w_load, w_run = transcribe(r.wav_path)
         except Exception as exc:
-            log(f"PROBLEM: whisper fail ho gaya -> {type(exc).__name__}: {exc}")
+            log(f"PROBLEM: whisper failed -> {type(exc).__name__}: {exc}")
             continue
 
         print(f"  whisper load: {w_load:.1f}s | transcribe: {w_run:.1f}s "
@@ -232,7 +232,7 @@ def main() -> int:
             print(f"      {w.start:6.2f} -> {w.end:6.2f}  {w.word}")
 
     print()
-    log("Test mukammal.")
+    log("Test complete.")
     return 0
 
 

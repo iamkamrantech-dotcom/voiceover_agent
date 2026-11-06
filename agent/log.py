@@ -1,7 +1,7 @@
 """Logging with two audiences.
 
-  log.user("Scene detect ho rahi hain...")   -> console, simple Roman Urdu
-  log.debug("histogram weight=0.6")          -> file only, English
+  log.user("Detecting scenes...")    -> console, plain English, sentence case
+  log.debug("histogram weight=0.6")  -> file only, technical detail
 
 Every run writes its own file: outputs/logs/run_YYYYmmdd_HHMMSS.log
 """
@@ -19,7 +19,7 @@ logging.addLevelName(_USER, "USER")
 
 class _Logger(logging.Logger):
     def user(self, msg: str, *args, **kwargs) -> None:
-        """A line meant for the person running the agent. Roman Urdu."""
+        """A line meant for the person running the agent. Plain English."""
         if self.isEnabledFor(_USER):
             self._log(_USER, msg, args, **kwargs)
 
@@ -34,9 +34,9 @@ class _ConsoleFormat(logging.Formatter):
         if record.levelno == _USER:
             return f"[agent] {record.getMessage()}"
         if record.levelno >= logging.ERROR:
-            return f"[agent] MASLA: {record.getMessage()}"
+            return f"[agent] Error: {record.getMessage()}"
         if record.levelno == logging.WARNING:
-            return f"[agent] Dhyan dein: {record.getMessage()}"
+            return f"[agent] Warning: {record.getMessage()}"
         return f"[debug] {record.getMessage()}"
 
 

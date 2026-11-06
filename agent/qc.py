@@ -128,7 +128,7 @@ def _measure_drift(cfg: Config, path: Path, timeline: Timeline,
     """
     from faster_whisper import WhisperModel
 
-    log.user("Final audio ka transcript nikal kar timing check kar rahe hain...")
+    log.user("Transcribing the final audio to check timing...")
     model = WhisperModel(cfg.whisper_model, device=cfg.device,
                          compute_type=cfg.whisper_compute_type,
                          cpu_threads=cfg.num_threads)
@@ -164,7 +164,7 @@ def run_qc(video_path: Path, timeline: Timeline, cfg: Config | None = None,
     log = log or agent_log.get()
 
     report = QCReport(video=str(video_path))
-    log.user("Final file ki quality check ho rahi hai...")
+    log.user("Running final checks...")
 
     # ---- duration --------------------------------------------------------
     frames = video_frame_count(cfg, video_path)
@@ -203,7 +203,7 @@ def run_qc(video_path: Path, timeline: Timeline, cfg: Config | None = None,
     report.peak_db = peak_level_db(cfg, video_path)
     if report.peak_db is not None and report.peak_db > -0.1:
         report.clipping = True
-        report.problems.append(f"audio clip ho rahi hai ({report.peak_db:.2f} dB)")
+        report.problems.append(f"audio is clipping ({report.peak_db:.2f} dB)")
 
     # ---- long silence where speech was actually expected -----------------
     # Gaps BETWEEN blocks are by design - the aligner never stretches a
@@ -225,8 +225,8 @@ def run_qc(video_path: Path, timeline: Timeline, cfg: Config | None = None,
                 "inside_voice": round(inside, 2), "block": culprit,
             })
             report.problems.append(
-                f"Block {culprit + 1} ke andar {inside:.1f}s ki khamoshi hai "
-                f"jahan awaaz honi chahiye thi ({start:.1f}s par)"
+                f"Block {culprit + 1} has {inside:.1f}s of silence where "
+                f"narration was expected (at {start:.1f}s)"
             )
 
     # ---- word drift ------------------------------------------------------
@@ -251,12 +251,12 @@ def run_qc(video_path: Path, timeline: Timeline, cfg: Config | None = None,
                 report.drift_ok = report.drift_median <= cfg.max_word_drift
                 if not report.drift_ok:
                     report.problems.append(
-                        f"alfaaz ki timing {report.drift_median:.2f}s khisak "
-                        f"gayi hai (hadd {cfg.max_word_drift:.2f}s)"
+                        f"word timing drifted by {report.drift_median:.2f}s "
+                        f"(limit {cfg.max_word_drift:.2f}s)"
                     )
             else:
                 report.drift_ok = False
-                report.problems.append("transcript se koi lafz match nahi hua")
+                report.problems.append("no words from the transcript matched the plan")
         except Exception as exc:
             log.warning(f"drift check nahi chal saka: {exc}")
             report.drift_applicable = False
@@ -278,7 +278,7 @@ def run_qc(video_path: Path, timeline: Timeline, cfg: Config | None = None,
             report.listen_to.append({
                 "block": audio.block_index,
                 "at": None,
-                "why": "alfaaz poore theek nahi aaye",
+                "why": "words were not fully correct",
             })
 
     report.passed = (report.duration_ok and report.loudness_ok
@@ -291,37 +291,37 @@ def summarise(report: QCReport, cfg: Config, log) -> None:
     """Short Roman Urdu summary for the person running the job."""
     log.user("")
     log.user("===== QC REPORT =====")
-    log.user(f"Video lambai : {report.duration_actual:.2f}s "
+    log.user(f"Duration    : {report.duration_actual:.2f}s "
              f"(plan {report.duration_expected:.2f}s) "
-             f"{'theek' if report.duration_ok else 'GHALAT'}")
+             f"{'ok' if report.duration_ok else 'WRONG'}")
     if report.loudness_i is not None:
-        log.user(f"Loudness     : {report.loudness_i:.1f} LUFS "
+        log.user(f"Loudness    : {report.loudness_i:.1f} LUFS "
                  f"(target {cfg.target_lufs:.0f}), true peak "
                  f"{report.loudness_tp:.1f} dB "
-                 f"{'theek' if report.loudness_ok else 'GHALAT'}")
-    log.user(f"Clipping     : {'HAAN - masla hai' if report.clipping else 'nahi'}")
+                 f"{'ok' if report.loudness_ok else 'WRONG'}")
+    log.user(f"Clipping    : {'YES, a problem' if report.clipping else 'no'}")
     if not report.drift_applicable:
-        log.user("Alfaaz timing: check nahi hua (mock awaaz)")
+        log.user("Word timing : not checked (mock voice)")
     elif report.drift_median is not None:
-        log.user(f"Alfaaz timing: median {report.drift_median:.2f}s, "
+        log.user(f"Word timing : median {report.drift_median:.2f}s, "
                  f"p95 {report.drift_p95:.2f}s, max {report.drift_max:.2f}s "
-                 f"({report.matched_words}/{report.total_words} alfaaz) "
-                 f"{'theek' if report.drift_ok else 'GHALAT'}")
+                 f"({report.matched_words}/{report.total_words} words) "
+                 f"{'ok' if report.drift_ok else 'WRONG'}")
     if report.long_silences:
-        log.user(f"Khamoshi     : {len(report.long_silences)} jagah lambi "
-                 f"khamoshi mili")
+        log.user(f"Long silence: {len(report.long_silences)} place(s) "
+                 f"found")
 
     if report.listen_to:
         log.user("")
-        log.user("Ye blocks khud sun kar check karein:")
+        log.user("Listen to these blocks yourself:")
         for item in report.listen_to:
             where = f" ({item['at']:.1f}s par)" if item["at"] is not None else ""
             log.user(f"  - Block {item['block'] + 1}{where}: {item['why']}")
 
     log.user("")
     if report.passed:
-        log.user("QC PASS - file theek lag rahi hai.")
+        log.user("QC PASS - the file looks good.")
     else:
-        log.user("QC FAIL - neeche wale masle dekh lein:")
+        log.user("QC FAIL - problems below:")
         for problem in report.problems:
             log.user(f"  - {problem}")

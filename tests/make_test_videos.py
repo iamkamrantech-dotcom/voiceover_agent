@@ -318,7 +318,7 @@ def main() -> int:
     IMAGES.mkdir(parents=True, exist_ok=True)
 
     log(f"FFmpeg: {cfg.ffmpeg_bin}")
-    log("Test videos banaye ja rahe hain...")
+    log("Building test videos...")
 
     for builder in (build_cuts, build_fades, build_zoom):
         truth = builder(cfg)
@@ -338,7 +338,7 @@ def main() -> int:
     bed = build_music_bed(cfg)
     log(f"{bed.name}: test music bed")
 
-    log(f"Sab test videos yahan hain: {MEDIA}")
+    log(f"All test videos are in {MEDIA}")
     return 0
 
 

@@ -135,7 +135,7 @@ def process_clip(seg: np.ndarray, sr: int) -> np.ndarray:
         if np.isfinite(loudness):
             filtered = ln.normalize.loudness(filtered, loudness, TARGET_LUFS)
     except Exception as exc:
-        log(f"Warning: loudness normalize skip ho gaya ({exc})")
+        log(f"Warning: skipped loudness normalisation ({exc})")
     # 4. safety: back off if normalisation pushed anything into clipping
     peak = float(np.max(np.abs(filtered))) if filtered.size else 0.0
     if peak > 0.98:
@@ -145,20 +145,20 @@ def process_clip(seg: np.ndarray, sr: int) -> np.ndarray:
 
 def main() -> int:
     if not SOURCE.is_file():
-        log(f"Source nahi mila: {SOURCE}")
+        log(f"Source not found: {SOURCE}")
         return 1
 
-    log(f"Client recording load ho rahi hai: {SOURCE.name}")
+    log(f"Loading client recording: {SOURCE.name}")
     y, sr = librosa.load(str(SOURCE), sr=SR, mono=True)
     log(f"Lambai {len(y) / sr:.1f} second, {sr} Hz, mono.")
 
     cands = score_windows(y, sr)
     if len(cands) < N_CLIPS:
-        log("Itne saaf hisse nahi mile ke 3 alag clip ban sakein.")
+        log("Could not find three separate clean sections.")
         return 1
 
     picked = pick_non_overlapping(cands, N_CLIPS)
-    log(f"{len(picked)} sab se saaf hisse chun liye gaye.")
+    log(f"Picked the {len(picked)} cleanest sections.")
 
     print()
     print("-" * 78)
@@ -173,7 +173,7 @@ def main() -> int:
         print(f"              saved {len(clip) / sr:.1f}s -> {out}")
 
     print()
-    log("Teeno reference clip tayyar hain.")
+    log("All three reference clips ready.")
     return 0
 
 

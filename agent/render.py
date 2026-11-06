@@ -63,8 +63,8 @@ def render_final(video: Path, timeline: Timeline, audio: Path, out_path: Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if copy_video:
-        log.user("Video mein koi tabdeeli nahi - stream copy kar rahe hain "
-                 "(quality bilkul bardbaad nahi hogi).")
+        log.user("Nothing is re-timed, copying the video stream "
+                 "(no quality loss).")
         cmd = [
             cfg.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(video), "-i", str(audio),
@@ -78,7 +78,7 @@ def render_final(video: Path, timeline: Timeline, audio: Path, out_path: Path,
             scale_height=None,  # keep source resolution
         )
         (work / "final_graph.txt").write_text(graph, encoding="utf-8")
-        log.user(f"Final render ho raha hai ({size[0]}x{size[1]}, "
+        log.user(f"Rendering final video ({size[0]}x{size[1]}, "
                  f"CRF {cfg.video_crf}, preset {cfg.video_preset})...")
         cmd = [
             cfg.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
@@ -101,6 +101,6 @@ def render_final(video: Path, timeline: Timeline, audio: Path, out_path: Path,
         log.error(f"Final render fail: {proc.stderr.strip()[-600:]}")
         raise RuntimeError("FFmpeg final render failed")
 
-    log.user(f"Final video tayyar: {out_path}")
+    log.user(f"Final video ready: {out_path}")
     return RenderResult(str(out_path), copy_video, burn, size[0], size[1],
                         timeline.fps)

@@ -43,15 +43,15 @@ CANCELLED = "cancelled"
 INTERRUPTED = "interrupted"
 
 STAGE_LABELS = {
-    "scenes": "Scenes dhoondi ja rahi hain",
-    "script": "Script baanti ja rahi hai",
-    "voice": "Awaaz banayi ja rahi hai",
-    "verify": "Awaaz ki quality check ho rahi hai",
-    "align": "Timeline plan ho rahi hai",
-    "subtitles": "Subtitles likhe ja rahe hain",
-    "audio": "Awaaz master ho rahi hai",
-    "render": "Final video ban rahi hai",
-    "qc": "Final check ho raha hai",
+    "scenes": "Detecting scenes",
+    "script": "Splitting script",
+    "voice": "Generating narration",
+    "verify": "Checking narration quality",
+    "align": "Planning timeline",
+    "subtitles": "Writing subtitles",
+    "audio": "Mastering audio",
+    "render": "Rendering final video",
+    "qc": "Running final checks",
 }
 
 # Rough starting points, replaced by this machine's measured speed as soon
@@ -186,11 +186,11 @@ class JobManager:
         for status in self.all_jobs():
             if status.state == RUNNING:
                 status.state = INTERRUPTED
-                status.detail = ("Server band ho gaya tha - ye job dobara "
-                                 "shuru ki ja sakti hai.")
+                status.detail = ("The server stopped, so this job can be "
+                                 "resumed.")
                 self.write(status)
-                self.log.user(f"Job {status.id} adhoori reh gayi thi - "
-                              f"resume kar sakte hain.")
+                self.log.user(f"Job {status.id} was interrupted, "
+                              f"it can be resumed.")
             elif status.state == QUEUED:
                 # It never started, so put it back in the queue.
                 self._queue.append(status.id)
@@ -269,7 +269,7 @@ class JobManager:
             return False
         status.state = QUEUED
         status.error = ""
-        status.detail = "Dobara qatar mein lag gayi."
+        status.detail = "Queued again."
         self.write(status)
         with self._lock:
             if job_id not in self._queue:
@@ -286,7 +286,7 @@ class JobManager:
                 status = self.read(job_id)
                 if status:
                     status.state = CANCELLED
-                    status.detail = "Qatar se nikal di gayi."
+                    status.detail = "Removed from the queue."
                     self.write(status)
                 self._renumber()
                 return True
@@ -320,7 +320,7 @@ class JobManager:
         status.state = RUNNING
         status.started = datetime.now().isoformat(timespec="seconds")
         status.position = 0
-        status.detail = "Shuru ho rahi hai..."
+        status.detail = "Starting..."
         self.write(status)
 
         engine = params.get("engine") or self.cfg.tts_engine
@@ -377,21 +377,21 @@ class JobManager:
             # "cancelled" would hide the fact that it can be resumed.
             if self._stop.is_set():
                 status.state = INTERRUPTED
-                status.detail = ("Server band ho gaya tha - ye job dobara "
-                                 "shuru ki ja sakti hai.")
-                self.log.user(f"Job {job_id} adhoori reh gayi (server band).")
+                status.detail = ("The server stopped, so this job can be "
+                                 "resumed.")
+                self.log.user(f"Job {job_id} interrupted (server stopped).")
             else:
                 status.state = CANCELLED
-                status.detail = "Job cancel kar di gayi."
+                status.detail = "Job cancelled."
                 status.finished = datetime.now().isoformat(timespec="seconds")
-                self.log.user(f"Job {job_id} cancel ho gayi.")
+                self.log.user(f"Job {job_id} cancelled.")
             self.write(status)
             return
         except Exception as exc:
             status = self.read(job_id) or status
             status.state = FAILED
             status.error = f"{type(exc).__name__}: {exc}"
-            status.detail = "Job fail ho gayi."
+            status.detail = "Job failed."
             status.finished = datetime.now().isoformat(timespec="seconds")
             self.write(status)
             self.log.error(f"job {job_id} failed:\n{traceback.format_exc()}")
@@ -404,7 +404,7 @@ class JobManager:
         status = self.read(job_id) or status
         status.state = DONE
         status.stage = "done"
-        status.detail = "Mukammal."
+        status.detail = "Complete."
         status.finished = datetime.now().isoformat(timespec="seconds")
         status.elapsed = elapsed
         status.remaining = 0.0
@@ -418,4 +418,4 @@ class JobManager:
             "warnings": result.warnings,
         }
         self.write(status)
-        self.log.user(f"Job {job_id} mukammal ({elapsed:.0f}s).")
+        self.log.user(f"Job {job_id} complete ({elapsed:.0f}s).")

@@ -15,6 +15,13 @@ tests/media/
 # --- Client voice profiles (private recordings, never committed) ---
 voices/
 
+# --- Front-end build toolchain (Node is only a build tool here) ---
+tools/node/
+web-ui/node_modules/
+web-ui/test-results/
+web-ui/playwright-report/
+# web/dist IS committed on purpose: running the app must need only Python.
+
 # --- Outputs & work files ---
 outputs/
 output/

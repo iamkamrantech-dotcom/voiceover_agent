@@ -50,7 +50,7 @@ class ChatterboxSynthesizer:
     def load(self) -> None:
         if self.model is not None:
             return
-        self.log.user(f"Chatterbox ({self.variant}) model load ho raha hai...")
+        self.log.user(f"Loading Chatterbox ({self.variant}) model...")
         import torch
 
         torch.set_num_threads(self.cfg.num_threads)
@@ -113,7 +113,7 @@ class ChatterboxSynthesizer:
 
         chunks = chunk_for_tts(text, self.cfg.tts_max_chunk_chars)
         if not chunks:
-            raise ValueError("Khali text synthesize nahi ho sakta.")
+            raise ValueError("Cannot synthesize empty text.")
 
         self._seed(seed)
         sr = self.sample_rate

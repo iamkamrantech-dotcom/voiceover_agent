@@ -96,7 +96,7 @@ def main() -> int:
     log = agent_log.setup(cfg.log_dir, cfg.log_level, run_name="test_server")
 
     if not (MEDIA / "cuts.mp4").is_file():
-        log.user("Test videos nahi mile - pehle tests/make_test_videos.py chalayein.")
+        log.user("Test videos not found. Run tests/make_test_videos.py first.")
         return 1
 
     # Keep this suite's jobs and cache out of the real output folders.
@@ -279,7 +279,7 @@ def main() -> int:
     print("=" * 84)
     ok = r.report()
     print()
-    log.user("Sab test pass ho gaye." if ok else "Kuch test fail hue.")
+    log.user("All tests passed." if ok else "Some tests failed.")
     return 0 if ok else 1
 
 

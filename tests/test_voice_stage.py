@@ -249,7 +249,7 @@ def main() -> int:
     log = agent_log.setup(cfg.log_dir, cfg.log_level, run_name="test_voice_stage")
 
     if not (MEDIA / "cuts.mp4").is_file():
-        log.user("Test video nahi mila - pehle tests/make_test_videos.py chalayein.")
+        log.user("Test video not found. Run tests/make_test_videos.py first.")
         return 1
 
     r = Results()
@@ -266,7 +266,7 @@ def main() -> int:
     print("=" * 88)
     ok = r.report()
     print()
-    log.user("Sab test pass ho gaye." if ok else "Kuch test fail hue.")
+    log.user("All tests passed." if ok else "Some tests failed.")
     return 0 if ok else 1
 
 

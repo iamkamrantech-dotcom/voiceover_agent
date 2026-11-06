@@ -287,7 +287,7 @@ def plan_timeline(detection: Detection, audio_blocks: list[BlockAudio],
     plans: list[BlockPlan] = []
     shift = 0.0  # everything after an extension moves later by this much
 
-    log.user(f"Timeline plan ho rahi hai: {len(audio_blocks)} block.")
+    log.user(f"Planning timeline for {len(audio_blocks)} blocks.")
 
     for position, block in enumerate(audio_blocks):
         is_final = position == len(audio_blocks) - 1
@@ -332,8 +332,8 @@ def plan_timeline(detection: Detection, audio_blocks: list[BlockAudio],
         overflow_before = max(0.0, voice_duration - available)
 
         if overflow_before > 1e-6:
-            log.user(f"Block {block.block_index + 1}: awaaz "
-                     f"{overflow_before:.2f}s zyada hai, adjust kar rahe hain...")
+            log.user(f"Block {block.block_index + 1}: narration is "
+                     f"{overflow_before:.2f}s too long, adjusting...")
 
             # ---- (a) tighten pauses --------------------------------------
             need = voice_duration - available
@@ -343,7 +343,7 @@ def plan_timeline(detection: Detection, audio_blocks: list[BlockAudio],
             )
             if pause_saved > 1e-4:
                 wav = tightened
-                log.user(f"  pauses chhoti ki: {pause_saved:.2f}s bachaya.")
+                log.user(f"  Tightened pauses, saved {pause_saved:.2f}s.")
 
             # ---- (b) speed the voice up ----------------------------------
             if voice_duration > available + 1e-6:
@@ -356,7 +356,7 @@ def plan_timeline(detection: Detection, audio_blocks: list[BlockAudio],
                     wav = stretched
                     words = [WordTiming(w.word, w.start / stretch, w.end / stretch)
                              for w in words]
-                    log.user(f"  awaaz {((stretch - 1) * 100):.0f}% tez ki.")
+                    log.user(f"  Sped narration up by {((stretch - 1) * 100):.0f}%.")
                 else:
                     stretch = 1.0
 
@@ -374,8 +374,8 @@ def plan_timeline(detection: Detection, audio_blocks: list[BlockAudio],
                 # keep the freeze on a whole number of frames
                 if freeze > 0:
                     freeze = round(freeze / frame) * frame
-                log.user(f"  video barha di: {use_slow:.2f}s slow + "
-                         f"{freeze:.2f}s freeze (hold_end par).")
+                log.user(f"  Extended video: {use_slow:.2f}s slowdown + "
+                         f"{freeze:.2f}s freeze on hold_end.")
 
         # Extension = the time the slowed section gained, plus the freeze.
         clean_part = max(0.0, split_at - src_start)
@@ -411,9 +411,9 @@ def plan_timeline(detection: Detection, audio_blocks: list[BlockAudio],
         blocks=plans,
     )
 
-    log.user(f"Timeline tayyar: {source_duration:.2f}s -> "
+    log.user(f"Timeline ready: {source_duration:.2f}s -> "
              f"{timeline.output_duration:.2f}s "
-             f"(+{shift:.2f}s extend kiya gaya).")
+             f"(+{shift:.2f}s added).")
     return timeline
 
 

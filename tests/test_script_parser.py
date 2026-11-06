@@ -141,7 +141,7 @@ def main() -> int:
     # ---- 5. overflow warning ---------------------------------------------
     scenes = fake_scenes([5, 5])
     split = parse_script(LONG_SCRIPT, scenes, cfg, log)
-    warned = any("lambi" in w for w in split.warnings)
+    warned = any("too long" in w for w in split.warnings)
     r.add("overflow warning", "warns", "warned" if warned else "silent", warned)
 
     # ---- 6. sentence splitter -------------------------------------------
@@ -169,7 +169,7 @@ def main() -> int:
     print("=" * 94)
     ok = r.report()
     print()
-    log.user("Sab test pass ho gaye." if ok else "Kuch test fail hue.")
+    log.user("All tests passed." if ok else "Some tests failed.")
     return 0 if ok else 1
 
 

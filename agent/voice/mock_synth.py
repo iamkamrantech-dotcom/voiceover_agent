@@ -76,7 +76,7 @@ class MockSynthesizer:
         seed = 0 if seed is None else seed
         words = text.split()
         if not words:
-            raise ValueError("Khali text synthesize nahi ho sakta.")
+            raise ValueError("Cannot synthesize empty text.")
 
         pieces: list[np.ndarray] = []
         timings: list[dict] = []

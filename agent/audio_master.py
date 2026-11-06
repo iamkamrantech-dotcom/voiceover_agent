@@ -134,7 +134,7 @@ def master(voice_wav: Path, out_path: Path, duration: float,
     log = log or agent_log.get()
 
     if music is not None and not has_audio_stream(cfg, music):
-        log.warning(f"{music.name} mein koi audio nahi hai - music chhod diya.")
+        log.warning(f"{music.name} has no audio stream, skipping music.")
         music = None
 
     with_music = music is not None
@@ -143,7 +143,7 @@ def master(voice_wav: Path, out_path: Path, duration: float,
                           music=str(music) if music else None)
 
     # ---- pass 1: measure -------------------------------------------------
-    log.user("Awaaz ki loudness naapi ja rahi hai (pass 1)...")
+    log.user("Measuring loudness (pass 1)...")
     measure = (f"loudnorm=I={cfg.target_lufs}:TP={cfg.target_true_peak}:"
                f"LRA=11:print_format=json")
     graph = build_graph(cfg, duration, with_music, measure)
@@ -159,7 +159,7 @@ def master(voice_wav: Path, out_path: Path, duration: float,
     measured = _parse_loudnorm_json(proc.stderr)
 
     if measured is None:
-        log.warning("loudnorm measurement nahi mili - single pass par ja rahe hain.")
+        log.warning("No loudnorm measurement, falling back to a single pass.")
         log.debug("ffmpeg stderr tail: %s", proc.stderr.strip()[-600:])
         result.two_pass = False
     else:
@@ -167,11 +167,11 @@ def master(voice_wav: Path, out_path: Path, duration: float,
         result.measured_tp = float(measured.get("input_tp", "nan"))
         result.measured_lra = float(measured.get("input_lra", "nan"))
         result.measured_thresh = float(measured.get("input_thresh", "nan"))
-        log.user(f"Naap liya: {result.measured_i:.1f} LUFS, "
+        log.user(f"Measured {result.measured_i:.1f} LUFS, "
                  f"true peak {result.measured_tp:.1f} dB.")
 
     # ---- pass 2: correct -------------------------------------------------
-    log.user("Final audio master ho raha hai (pass 2)...")
+    log.user("Mastering final audio (pass 2)...")
     if measured is not None:
         apply_filter = (
             f"loudnorm=I={cfg.target_lufs}:TP={cfg.target_true_peak}:LRA=11:"
@@ -206,7 +206,7 @@ def master(voice_wav: Path, out_path: Path, duration: float,
 
     _verify_and_correct(out_path, duration, cfg, result, log)
 
-    log.user(f"Audio tayyar: {out_path.name}")
+    log.user(f"Audio ready: {out_path.name}")
     return result
 
 
@@ -250,7 +250,7 @@ def _verify_and_correct(path: Path, duration: float, cfg: Config,
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
-        log.warning("loudness correction fail ho gayi, pehli file rakh li.")
+        log.warning("Loudness correction failed, keeping the first render.")
         log.debug("ffmpeg: %s", proc.stderr.strip()[-400:])
         fixed.unlink(missing_ok=True)
         return
@@ -263,7 +263,7 @@ def _verify_and_correct(path: Path, duration: float, cfg: Config,
             result.output_tp = float(again.get("input_tp", "nan"))
         except ValueError:
             pass
-    log.user(f"Loudness theek ki gayi: {result.output_i:.2f} LUFS.")
+    log.user(f"Loudness corrected to {result.output_i:.2f} LUFS.")
 
 
 def measure_loudness(path: Path, cfg: Config, log=None) -> dict | None:

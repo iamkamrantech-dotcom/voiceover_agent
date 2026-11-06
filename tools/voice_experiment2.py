@@ -100,18 +100,18 @@ def generate(jobs: list[tuple[str, Path, int]], results: dict) -> None:
     """jobs = [(name, reference_path, seed)]"""
     todo = [j for j in jobs if not (OUT_DIR / f"{j[0]}.wav").is_file()]
     if not todo:
-        log("Sab clips pehle se mojood hain, skip.")
+        log("All clips already exist, skipping.")
         return
 
     import torch
     import torchaudio
     from chatterbox.tts import ChatterboxTTS
 
-    log(f"Standard model load ho raha hai ({len(todo)} clips banane hain)...")
+    log(f"Loading Standard model ({len(todo)} clips to generate)...")
     model = ChatterboxTTS.from_pretrained(device="cpu")
 
     for name, ref, seed in todo:
-        log(f"{name} ban raha hai (seed {seed})...")
+        log(f"Generating {name} (seed {seed})...")
         set_seed(seed)
         t0 = time.perf_counter()
         with torch.no_grad():
@@ -136,7 +136,7 @@ def generate(jobs: list[tuple[str, Path, int]], results: dict) -> None:
 
     del model
     gc.collect()
-    log("Standard model memory se hata diya gaya.")
+    log("Standard model released from memory.")
 
 
 def score(results: dict) -> None:
@@ -146,7 +146,7 @@ def score(results: dict) -> None:
 
     from voice_similarity import SpeakerEncoder, cosine_percent
 
-    log("ECAPA load ho raha hai...")
+    log("Loading ECAPA...")
     enc = SpeakerEncoder()
     target = enc.embed_file(ORIGINAL)
     for name in todo:
@@ -154,13 +154,13 @@ def score(results: dict) -> None:
             emb = enc.embed_file(OUT_DIR / results[name]["file"])
             results[name]["similarity"] = round(cosine_percent(target, emb), 1)
         except Exception as exc:
-            log(f"Warning: {name} score fail -> {exc}")
+            log(f"Warning: scoring {name} failed -> {exc}")
             results[name]["similarity"] = 0.0
         save_results(results)
     enc.free()
     del enc
     gc.collect()
-    log("ECAPA memory se hata diya gaya.")
+    log("ECAPA released from memory.")
 
 
 def check_words(results: dict) -> None:
@@ -176,7 +176,7 @@ def check_words(results: dict) -> None:
 
     from faster_whisper import WhisperModel
 
-    log("Whisper load ho raha hai, alfaaz check ho rahe hain...")
+    log("Loading Whisper and checking the words...")
     model = WhisperModel("small.en", device="cpu", compute_type="int8")
     for name in todo:
         try:
@@ -185,13 +185,13 @@ def check_words(results: dict) -> None:
             results[name]["transcript"] = heard
             results[name]["words_ok"] = normalise(heard) == expected
         except Exception as exc:
-            log(f"Warning: {name} transcribe fail -> {exc}")
+            log(f"Warning: transcribing {name} failed -> {exc}")
             results[name]["transcript"] = ""
             results[name]["words_ok"] = False
         save_results(results)
     del model
     gc.collect()
-    log("Whisper memory se hata diya gaya.")
+    log("Whisper released from memory.")
 
 
 def expected_best_of(scores: list[float]) -> dict[int, float]:
@@ -207,13 +207,13 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for name, path in REFS.items():
         if not path.is_file():
-            log(f"{path.name} nahi mila - pehle tools/prepare_voice6.py chalayein.")
+            log(f"{path.name} not found. Run tools/prepare_voice6.py first.")
             return 1
 
     results = load_results()
 
     # ---- Step 1: which reference window ---------------------------------
-    log("STEP 1: reference window ka muqabla (sab ek hi seed par).")
+    log("Step 1: comparing reference windows, all on the same seed.")
     step1 = [(f"s1_{k}", p, FAIR_SEED) for k, p in REFS.items()]
     generate(step1, results)
     score(results)
@@ -222,10 +222,10 @@ def main() -> int:
     best = max(step1_names, key=lambda n: results[n]["similarity"])
     best_ref_key = best[len("s1_"):]
     best_ref = REFS[best_ref_key]
-    log(f"Behtareen reference: {best_ref.name} ({results[best]['similarity']}%)")
+    log(f"Best reference: {best_ref.name} ({results[best]['similarity']}%)")
 
     # ---- Step 2: best-of-N ----------------------------------------------
-    log(f"STEP 2: {best_ref.name} ke sath {len(BON_SEEDS)} alag seeds.")
+    log(f"Step 2: {best_ref.name} with {len(BON_SEEDS)} different seeds.")
     step2 = [(f"s2_{best_ref_key}_seed{s}", best_ref, s) for s in BON_SEEDS]
     generate(step2, results)
     score(results)
@@ -278,7 +278,7 @@ def main() -> int:
     # ---- Winner ----------------------------------------------------------
     every = [n for n in results if results[n].get("words_ok")]
     if not every:
-        log("Koi bhi clip alfaaz ke test mein pass nahi hua.")
+        log("No clip passed the word check.")
         return 1
     winner = max(every, key=lambda n: results[n]["similarity"])
     shutil.copyfile(OUT_DIR / results[winner]["file"], OUT_DIR / "BEST_NEW.wav")
@@ -300,7 +300,7 @@ def main() -> int:
             print(f"    {n}: {results[n].get('transcript', '')!r}")
 
     print()
-    log("Experiment 2 mukammal.")
+    log("Experiment 2 complete.")
     return 0
 
 

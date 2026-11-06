@@ -57,7 +57,7 @@ def require_login(request: Request) -> None:
         return
     token = request.cookies.get("va_session", "")
     if token not in _sessions:
-        raise HTTPException(status_code=401, detail="Pehle login karein.")
+        raise HTTPException(status_code=401, detail="Sign in first.")
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -75,7 +75,7 @@ def login(password: str = Form(...)) -> JSONResponse:
         response.set_cookie("va_session", token, httponly=True,
                             samesite="lax", max_age=60 * 60 * 24 * 14)
         return response
-    raise HTTPException(status_code=401, detail="Password ghalat hai.")
+    raise HTTPException(status_code=401, detail="Wrong password.")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -105,7 +105,7 @@ def _save_upload(upload: UploadFile, folder: Path, name: str) -> Path:
                 target.unlink(missing_ok=True)
                 raise HTTPException(
                     status_code=413,
-                    detail=f"File bohat bari hai (hadd {cfg.max_upload_mb} MB).")
+                    detail=f"File is too large (limit {cfg.max_upload_mb} MB).")
             handle.write(chunk)
     return target
 
@@ -139,7 +139,7 @@ async def check(video: str = Form(...), script_text: str = Form(...),
                 engine: str = Form(""), draft: bool = Form(True)) -> dict:
     video_path = Path(video)
     if not video_path.is_file():
-        raise HTTPException(404, "Video nahi mili.")
+        raise HTTPException(404, "Video not found.")
 
     folder = video_path.parent
     script_path = folder / "script.txt"
@@ -193,9 +193,9 @@ async def create_job(video: str = Form(...), script: str = Form(...),
     video_path = Path(video)
     script_path = Path(script)
     if not video_path.is_file():
-        raise HTTPException(404, "Video nahi mili.")
+        raise HTTPException(404, "Video not found.")
     if not script_path.is_file():
-        raise HTTPException(404, "Script nahi mili.")
+        raise HTTPException(404, "Script not found.")
 
     params = {
         "video": str(video_path), "script": str(script_path),
@@ -223,7 +223,7 @@ def list_jobs() -> dict:
 def job_status(job_id: str) -> dict:
     status = manager.read(job_id)
     if status is None:
-        raise HTTPException(404, "Job nahi mili.")
+        raise HTTPException(404, "Job not found.")
     return status.to_dict()
 
 
@@ -241,7 +241,7 @@ def resume_job(job_id: str) -> dict:
 def job_timeline(job_id: str) -> dict:
     path = manager.job_dir(job_id) / "timeline.json"
     if not path.is_file():
-        raise HTTPException(404, "Timeline abhi tayyar nahi.")
+        raise HTTPException(404, "The timeline is not ready yet.")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -249,7 +249,7 @@ def job_timeline(job_id: str) -> dict:
 def job_file(job_id: str, kind: str):
     status = manager.read(job_id)
     if status is None:
-        raise HTTPException(404, "Job nahi mili.")
+        raise HTTPException(404, "Job not found.")
     folder = manager.job_dir(job_id)
 
     choices = {
@@ -260,7 +260,7 @@ def job_file(job_id: str, kind: str):
     }
     path = choices.get(kind)
     if path is None or not path.is_file():
-        raise HTTPException(404, "File nahi mili.")
+        raise HTTPException(404, "File not found.")
 
     media = "video/mp4" if kind == "video" else "application/octet-stream"
     inline = kind == "video"
@@ -289,9 +289,9 @@ def voice_audio(path: str):
                (PROJECT_ROOT / "input").resolve()]
     # Only ever serve audio from the voice folders, never an arbitrary path.
     if not any(str(target).startswith(str(root)) for root in allowed):
-        raise HTTPException(403, "Ye file serve nahi ki ja sakti.")
+        raise HTTPException(403, "That file cannot be served.")
     if not target.is_file():
-        raise HTTPException(404, "File nahi mili.")
+        raise HTTPException(404, "File not found.")
     return FileResponse(target)
 
 
@@ -365,7 +365,7 @@ def main() -> int:
     import uvicorn
 
     url = f"http://{cfg.api_host}:{cfg.api_port}"
-    log.user(f"Server chal raha hai: {url}")
+    log.user(f"Server running at {url}")
     if "--no-browser" not in sys.argv:
         try:
             webbrowser.open(url)

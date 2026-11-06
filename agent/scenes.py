@@ -143,7 +143,7 @@ def _read_features(path: Path, cfg: Config, step: int):
     at the sampled frames (histograms are the expensive part)."""
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
-        raise RuntimeError(f"Video khul nahi saka: {path}")
+        raise RuntimeError(f"Could not open video: {path}")
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     smalls: list[np.ndarray] = []
@@ -321,7 +321,7 @@ def _save_keyframes(path: Path, scenes: list[Scene], out_dir: Path, log) -> None
         cap.set(cv2.CAP_PROP_POS_FRAMES, target)
         ok, frame = cap.read()
         if not ok:
-            log.warning("scene %d ka keyframe nahi mila", scene.index)
+            log.warning("could not read keyframe for scene %d", scene.index)
             continue
         dest = out_dir / f"scene_{scene.index:03d}.jpg"
         cv2.imwrite(str(dest), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
@@ -336,7 +336,7 @@ def detect_scenes(video: Path | str, cfg: Config | None = None,
     log = log or agent_log.get()
     path = Path(video)
     if not path.is_file():
-        raise FileNotFoundError(f"Video nahi mila: {path}")
+        raise FileNotFoundError(f"Video not found: {path}")
 
     # Sampling step in frames, derived from the video's own fps.
     cap = cv2.VideoCapture(str(path))
@@ -346,7 +346,7 @@ def detect_scenes(video: Path | str, cfg: Config | None = None,
     lag_frames = max(1, int(round(cfg.scene_lag_seconds * probe_fps)))
     lag_steps = max(1, int(round(lag_frames / step)))
 
-    log.user(f"Scene detect ho rahi hain: {path.name}")
+    log.user(f"Detecting scenes in {path.name}")
     log.debug("step=%d lag_frames=%d lag_steps=%d threshold=%.2f",
               step, lag_frames, lag_steps, cfg.scene_threshold)
 
@@ -356,7 +356,7 @@ def detect_scenes(video: Path | str, cfg: Config | None = None,
     log.debug("fps=%.3f frames=%d duration=%.3f", fps, frame_count, duration)
 
     runs = _coarse_candidates(smalls, hists, step, lag_steps, cfg, log)
-    log.user(f"{len(runs)} mumkina transition mile, ab exact frame nikal rahe hain...")
+    log.user(f"{len(runs)} candidate transitions found, locating exact frames...")
 
     transitions: list[Transition] = []
     for run in runs:
@@ -378,7 +378,7 @@ def detect_scenes(video: Path | str, cfg: Config | None = None,
 
     cuts = sum(1 for t in transitions if t.kind == "cut")
     fades = sum(1 for t in transitions if t.kind == "fade")
-    log.user(f"{len(scenes)} scenes mile ({cuts} hard cut, {fades} fade).")
+    log.user(f"{len(scenes)} scenes found ({cuts} hard cuts, {fades} fades).")
 
     return Detection(path.name, fps, frame_count, duration, scenes, transitions)
 

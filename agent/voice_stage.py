@@ -134,14 +134,14 @@ def _generate_round(blocks_todo: list[tuple[Block, list[int]]], cfg: Config,
                              detail=f"Block {block.index + 1}/{total_blocks}: "
                                     f"take {i + 1}/{len(seeds)}")
                 if path.is_file():
-                    log.user(f"{human}: take {i + 1}/{len(seeds)} cache se mil gaya.")
+                    log.user(f"{human}: take {i + 1}/{len(seeds)} found in cache.")
                     import soundfile as sf
 
                     info = sf.info(str(path))
                     made.append(Take(seed, path, info.frames / info.samplerate))
                     continue
 
-                log.user(f"{human}: awaaz ban rahi hai "
+                log.user(f"{human}: generating narration "
                          f"(take {i + 1}/{len(seeds)})")
                 result = synth.synthesize(block.text, path, seed=seed)
                 made.append(Take(seed, result.path, result.duration))
@@ -204,10 +204,10 @@ def run_voice_stage(blocks: list[Block], cfg: Config | None = None,
     silent = [b for b in blocks if b.is_silent]
     by_index = {b.index: b for b in blocks}
 
-    log.user(f"Awaaz banane ka kaam shuru: {len(spoken)} block, "
-             f"{n_takes} take har block ke liye (engine: {engine}).")
+    log.user(f"Generating narration for {len(spoken)} blocks, "
+             f"{n_takes} takes each (engine: {engine}).")
     if silent:
-        log.user(f"{len(silent)} block khamosh rahenge (koi text nahi).")
+        log.user(f"{len(silent)} blocks stay silent (no text).")
 
     base_seed = cfg.tts_seed if cfg.tts_seed is not None else 0
 
@@ -218,9 +218,9 @@ def run_voice_stage(blocks: list[Block], cfg: Config | None = None,
 
     # ---- PASS 2 ----------------------------------------------------------
     _check(cancel)
-    log.user("Har take ki quality check ho rahi hai...")
+    log.user("Checking the quality of each take...")
     if progress:
-        progress(stage="verify", detail="Quality check ho raha hai...")
+        progress(stage="verify", detail="Checking quality...")
     _verify_round(takes, by_index, cfg, engine, log)
 
     # ---- PASS 3 ----------------------------------------------------------
@@ -228,8 +228,8 @@ def run_voice_stage(blocks: list[Block], cfg: Config | None = None,
         failing = [b for b in spoken if _pick(takes.get(b.index, []))[0] is None]
         if not failing:
             break
-        log.user(f"{len(failing)} block ke alfaaz theek nahi aaye - "
-                 f"dobara koshish ({round_number}/{cfg.tts_retry_rounds})...")
+        log.user(f"{len(failing)} blocks had the wrong words, "
+                 f"retrying ({round_number}/{cfg.tts_retry_rounds})...")
         offset = base_seed + 1000 * round_number
         retry = [(b, [offset + i for i in range(n_takes)]) for b in failing]
         extra = _generate_round(retry, cfg, engine, log, len(spoken),
@@ -259,12 +259,12 @@ def run_voice_stage(blocks: list[Block], cfg: Config | None = None,
                        key=lambda t: (t.similarity if t.similarity is not None else 0.0))
             take_number = block_takes.index(best) + 1
             log.warning(
-                f"Block {block.index + 1}: kisi bhi take ke alfaaz theek nahi - "
-                f"sab se behtar take rakh liya, aap khud sun kar check karein."
+                f"Block {block.index + 1}: no take had the right words, "
+                f"keeping the closest one. Listen to it yourself."
             )
 
         if best is None:
-            log.error(f"Block {block.index + 1}: koi take nahi bana.")
+            log.error(f"Block {block.index + 1}: no take was produced.")
             out.append(BlockAudio(
                 block_index=block.index, text=block.text,
                 scene_ids=block.scene_ids, scene_start=block.start,
@@ -297,14 +297,14 @@ def run_voice_stage(blocks: list[Block], cfg: Config | None = None,
         converter.free()
 
     good = sum(1 for b in out if b.words_ok and not b.silent)
-    log.user(f"Awaaz tayyar: {good}/{len(spoken)} block ke alfaaz bilkul theek hain.")
+    log.user(f"Narration ready: {good}/{len(spoken)} blocks have the right words.")
 
     weak = [b for b in out if not b.silent and b.similarity_reliable
             and b.similarity is not None and b.similarity < cfg.min_similarity]
     if weak:
         log.warning(
-            f"{len(weak)} block ki awaaz client se kaafi milti nahi "
-            f"({cfg.min_similarity:.0f}% se kam) - sun kar check karein."
+            f"{len(weak)} blocks do not sound close enough to the client "
+            f"(below {cfg.min_similarity:.0f}%). Listen and check."
         )
     short = [b for b in out if not b.silent and not b.similarity_reliable]
     if short:

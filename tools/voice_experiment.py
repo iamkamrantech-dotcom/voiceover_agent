@@ -99,18 +99,18 @@ def stage_turbo(results: dict) -> None:
     todo = [(f"turbo_{k}", v) for k, v in REFS.items()
             if not (OUT_DIR / f"turbo_{k}.wav").is_file()]
     if not todo:
-        log("Stage A: pehle se mukammal, skip.")
+        log("Stage A: already done, skipping.")
         return
 
     import torch
     import torchaudio
     from chatterbox.tts_turbo import ChatterboxTurboTTS
 
-    log("Stage A: Turbo model load ho raha hai...")
+    log("Stage A: loading Turbo model...")
     model = ChatterboxTurboTTS.from_pretrained(device="cpu")
 
     for name, ref in todo:
-        log(f"Stage A: {name} ban raha hai...")
+        log(f"Stage A: generating {name}...")
         t0 = time.perf_counter()
         with torch.no_grad():
             wav = model.generate(TEXT, audio_prompt_path=str(ref))
@@ -128,7 +128,7 @@ def stage_turbo(results: dict) -> None:
         save_results(results)
 
     free(model)
-    log("Stage A: Turbo model memory se hata diya gaya.")
+    log("Stage A: Turbo model released from memory.")
 
 
 def stage_standard(results: dict, best_ref_key: str) -> None:
@@ -139,18 +139,18 @@ def stage_standard(results: dict, best_ref_key: str) -> None:
         if not (OUT_DIR / f"standard_{best_ref_key}_e{e}_c{c}.wav").is_file()
     ]
     if not todo:
-        log("Stage B: pehle se mukammal, skip.")
+        log("Stage B: already done, skipping.")
         return
 
     import torch
     import torchaudio
     from chatterbox.tts import ChatterboxTTS
 
-    log("Stage B: Standard model load ho raha hai...")
+    log("Stage B: loading Standard model...")
     model = ChatterboxTTS.from_pretrained(device="cpu")
 
     for name, exag, cfg in todo:
-        log(f"Stage B: {name} ban raha hai (slow, sabar karein)...")
+        log(f"Stage B: generating {name} (slow)...")
         t0 = time.perf_counter()
         with torch.no_grad():
             wav = model.generate(
@@ -173,26 +173,26 @@ def stage_standard(results: dict, best_ref_key: str) -> None:
         save_results(results)
 
     free(model)
-    log("Stage B: Standard model memory se hata diya gaya.")
+    log("Stage B: Standard model released from memory.")
 
 
 def stage_vc(results: dict, sources: list[str], best_ref_key: str) -> None:
     ref = REFS[best_ref_key]
     todo = [s for s in sources if not (OUT_DIR / f"vc_{s}.wav").is_file()]
     if not todo:
-        log("Stage C: pehle se mukammal, skip.")
+        log("Stage C: already done, skipping.")
         return
 
     import torch
     import torchaudio
     from chatterbox.vc import ChatterboxVC
 
-    log("Stage C: Voice-conversion model load ho raha hai...")
+    log("Stage C: loading voice-conversion model...")
     model = ChatterboxVC.from_pretrained(device="cpu")
 
     for src in todo:
         name = f"vc_{src}"
-        log(f"Stage C: {name} ban raha hai...")
+        log(f"Stage C: generating {name}...")
         t0 = time.perf_counter()
         with torch.no_grad():
             wav = model.generate(
@@ -215,7 +215,7 @@ def stage_vc(results: dict, sources: list[str], best_ref_key: str) -> None:
         save_results(results)
 
     free(model)
-    log("Stage C: VC model memory se hata diya gaya.")
+    log("Stage C: VC model released from memory.")
 
 
 # --------------------------------------------------------------------------
@@ -229,7 +229,7 @@ def score_similarity(results: dict, names: list[str]) -> None:
 
     from voice_similarity import SpeakerEncoder, cosine_percent
 
-    log("ECAPA load ho raha hai, similarity nikali ja rahi hai...")
+    log("Loading ECAPA and scoring similarity...")
     enc = SpeakerEncoder()
     target = enc.embed_file(ORIGINAL)
 
@@ -240,13 +240,13 @@ def score_similarity(results: dict, names: list[str]) -> None:
                 cosine_percent(target, enc.embed_file(path)), 1
             )
         except Exception as exc:
-            log(f"Warning: {name} score nahi ho saka -> {exc}")
+            log(f"Warning: could not score {name} -> {exc}")
             results[name]["similarity"] = 0.0
         save_results(results)
 
     enc.free()
     free(enc)
-    log("ECAPA memory se hata diya gaya.")
+    log("ECAPA released from memory.")
 
 
 def check_words(results: dict) -> None:
@@ -265,7 +265,7 @@ def check_words(results: dict) -> None:
 
     from faster_whisper import WhisperModel
 
-    log("Whisper load ho raha hai, alfaaz check ho rahe hain...")
+    log("Loading Whisper and checking the words...")
     model = WhisperModel("small.en", device="cpu", compute_type="int8")
     expected = normalise(TEXT)
 
@@ -277,13 +277,13 @@ def check_words(results: dict) -> None:
             results[name]["transcript"] = heard
             results[name]["words_ok"] = normalise(heard) == expected
         except Exception as exc:
-            log(f"Warning: {name} transcribe nahi hua -> {exc}")
+            log(f"Warning: could not transcribe {name} -> {exc}")
             results[name]["transcript"] = ""
             results[name]["words_ok"] = False
         save_results(results)
 
     free(model)
-    log("Whisper memory se hata diya gaya.")
+    log("Whisper released from memory.")
 
 
 # --------------------------------------------------------------------------
@@ -292,7 +292,7 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for key, path in REFS.items():
         if not path.is_file():
-            log(f"{path.name} nahi mila - pehle tools/prepare_voice.py chalayein.")
+            log(f"{path.name} not found. Run tools/prepare_voice.py first.")
             return 1
 
     results = load_results()
@@ -304,7 +304,7 @@ def main() -> int:
 
     best_turbo = max(turbo_names, key=lambda n: results[n].get("similarity", 0))
     best_ref_key = best_turbo.replace("turbo_", "")
-    log(f"Sab se achha reference: {REFS[best_ref_key].name} "
+    log(f"Best reference: {REFS[best_ref_key].name} "
         f"({results[best_turbo]['similarity']}%)")
 
     # --- Stage B: Standard with the best reference ------------------------
@@ -318,7 +318,7 @@ def main() -> int:
         reverse=True,
     )
     top_two = ranked[:2]
-    log(f"VC ke liye top 2: {', '.join(top_two)}")
+    log(f"Top 2 for voice conversion: {', '.join(top_two)}")
     stage_vc(results, top_two, best_ref_key)
     score_similarity(results, list(results.keys()))
 
@@ -370,7 +370,7 @@ def main() -> int:
         print(f"    similarity : {results[winner]['similarity']}%")
 
     print()
-    log("Experiment mukammal.")
+    log("Experiment complete.")
     return 0
 
 

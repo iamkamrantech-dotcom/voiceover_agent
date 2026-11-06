@@ -61,10 +61,10 @@ def main() -> int:
     video = Path(args.video)
     script = Path(args.script)
     if not video.is_file():
-        log.error(f"Video nahi mila: {video}")
+        log.error(f"Video not found: {video}")
         return 1
     if not script.is_file():
-        log.error(f"Script nahi mili: {script}")
+        log.error(f"Script not found: {script}")
         return 1
 
     # ---- script check only ----------------------------------------------
@@ -73,15 +73,15 @@ def main() -> int:
         print(script_check_table(split, rows, cfg))
         print()
         needs_cut = sum(1 for r in rows if r.cut_words)
-        log.user("Script check mukammal - koi awaaz nahi banayi gayi."
+        log.user("Script check complete. No narration was generated."
                  if not needs_cut else
-                 f"{needs_cut} block lambe hain - script theek kar ke "
-                 f"dobara check karein, phir voice banayein.")
+                 f"{needs_cut} blocks are too long. Shorten the script, "
+                 f"check again, then generate the narration.")
         return 0 if not needs_cut else 3
 
     music = Path(args.music) if args.music else None
     if music is not None and not music.is_file():
-        log.error(f"Music file nahi mili: {music}")
+        log.error(f"Music file not found: {music}")
         return 1
 
     result = run_job(

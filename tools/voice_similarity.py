@@ -109,10 +109,10 @@ def main() -> int:
     target = Path(sys.argv[1])
     candidates = [Path(p) for p in sys.argv[2:]]
 
-    log("ECAPA speaker model load ho raha hai...")
+    log("Loading the ECAPA speaker model...")
     enc = SpeakerEncoder()
 
-    log(f"Target embedding ban rahi hai: {target.name}")
+    log(f"Building target embedding: {target.name}")
     target_emb = enc.embed_file(target)
 
     print()

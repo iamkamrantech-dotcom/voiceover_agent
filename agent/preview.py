@@ -93,7 +93,7 @@ def render_preview(video: Path, timeline: Timeline, out_path: Path,
     work = Path(work_dir or (cfg.work_dir / "preview"))
     work.mkdir(parents=True, exist_ok=True)
 
-    log.user("Preview ke liye awaaz ka track bana rahe hain...")
+    log.user("Building the narration track for the preview...")
     voice = build_voice_track(timeline, cfg, work / "voice_track.wav", log)
 
     subtitle_path = None
@@ -122,12 +122,12 @@ def render_preview(video: Path, timeline: Timeline, out_path: Path,
         ]
         return subprocess.run(cmd, capture_output=True, text=True)
 
-    log.user("Preview render ho raha hai (fast, low quality)...")
+    log.user("Rendering preview (fast, low quality)...")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     proc = run(with_subs=subtitle_path is not None)
 
     if proc.returncode != 0 and subtitle_path is not None:
-        log.warning("Subtitles ke sath render fail hua, bina subtitles try kar rahe hain.")
+        log.warning("Render with subtitles failed, retrying without them.")
         log.debug("ffmpeg error: %s", proc.stderr.strip()[:800])
         proc = run(with_subs=False)
 
@@ -135,5 +135,5 @@ def render_preview(video: Path, timeline: Timeline, out_path: Path,
         log.error(f"Preview render fail: {proc.stderr.strip()[:500]}")
         raise RuntimeError("FFmpeg preview render failed")
 
-    log.user(f"Preview tayyar: {out_path}")
+    log.user(f"Preview ready: {out_path}")
     return out_path

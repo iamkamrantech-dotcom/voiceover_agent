@@ -127,8 +127,8 @@ def show_client_video(cfg: Config, log) -> None:
     print("  CLIENT VIDEO")
     print("=" * 78)
     if not video.is_file():
-        print(f"  {video} mojood nahi hai - skip.")
-        print("  Apni video yahan rakhein to agli baar scene list print hogi.")
+        print(f"  {video} is not present, skipping.")
+        print("  Put a video there and the scene list prints next time.")
         return
 
     result = detect_scenes(video, cfg,
@@ -152,7 +152,7 @@ def main() -> int:
     missing = [n for n in ("cuts", "fades", "zoom")
                if not (MEDIA / f"{n}.json").is_file()]
     if missing:
-        log.user("Test videos nahi mile - pehle tests/make_test_videos.py chalayein.")
+        log.user("Test videos not found. Run tests/make_test_videos.py first.")
         return 1
 
     check = Check()
@@ -173,9 +173,9 @@ def main() -> int:
 
     print()
     if check.passed:
-        log.user("Sab test pass ho gaye.")
+        log.user("All tests passed.")
     else:
-        log.user(f"{failed} test fail hue.")
+        log.user(f"{failed} tests failed.")
     return 0 if check.passed else 1
 
 

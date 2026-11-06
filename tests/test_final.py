@@ -288,8 +288,8 @@ def main() -> int:
               "music_bed.wav"]
     missing = [n for n in needed if not (MEDIA / n).is_file()]
     if missing:
-        log.user(f"Ye files nahi mili: {missing} - pehle "
-                 f"tests/make_test_videos.py chalayein.")
+        log.user(f"These files are missing: {missing}. Run "
+                 f"tests/make_test_videos.py first.")
         return 1
 
     r = Results()
@@ -310,7 +310,7 @@ def main() -> int:
     print("=" * 92)
     ok = r.report()
     print()
-    log.user("Sab test pass ho gaye." if ok else "Kuch test fail hue.")
+    log.user("All tests passed." if ok else "Some tests failed.")
     return 0 if ok else 1
 
 

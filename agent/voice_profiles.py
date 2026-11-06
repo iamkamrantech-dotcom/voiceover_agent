@@ -100,7 +100,7 @@ def set_active(profile_name: str, candidate: str, log=None) -> dict:
     folder = profile_dir(profile_name)
     reference = folder / candidate
     if not reference.is_file():
-        raise FileNotFoundError(f"{candidate} nahi mila")
+        raise FileNotFoundError(f"{candidate} not found")
     source = next((p for p in folder.glob("source.*")), None)
     data = {
         "profile": profile_name,
@@ -112,7 +112,7 @@ def set_active(profile_name: str, candidate: str, log=None) -> dict:
     VOICES_DIR.mkdir(parents=True, exist_ok=True)
     ACTIVE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
     if log:
-        log.user(f"Active awaaz set ho gayi: {profile_name}/{candidate}")
+        log.user(f"Active voice set to {profile_name}/{candidate}")
     return data
 
 
@@ -134,10 +134,10 @@ def prepare_profile(recording: Path, cfg: Config, name: str | None = None,
     if Path(recording).resolve() != stored_source.resolve():
         shutil.copyfile(recording, stored_source)
 
-    log.user("Recording parhi ja rahi hai...")
+    log.user("Reading recording...")
     audio, sr = librosa.load(str(stored_source), sr=24_000, mono=True)
     if len(audio) < 24_000 * (CLIP_SECONDS + 1):
-        raise ValueError("Recording bohat chhoti hai - kam az kam 15 second "
+        raise ValueError("The recording is too short. At least 15 seconds are "
                          "chahiye.")
 
     windows = pick_spread(analyse(audio, sr), 4)
@@ -152,7 +152,7 @@ def prepare_profile(recording: Path, cfg: Config, name: str | None = None,
             start=round(window.start_s, 2), end=round(window.end_s, 2),
             score=round(window.score, 1),
         ))
-    log.user(f"{len(candidates)} candidate clips tayyar hain.")
+    log.user(f"{len(candidates)} candidate clips ready.")
 
     if score:
         _score_candidates(candidates, folder, cfg, engine or cfg.tts_engine, log)
@@ -185,7 +185,7 @@ def _score_candidates(candidates: list[Candidate], folder: Path, cfg: Config,
     source = next((p for p in folder.glob("source.*")), None)
     samples: list[tuple[Candidate, Path]] = []
 
-    log.user("Har candidate se ek test jumla banaya ja raha hai...")
+    log.user("Generating a test sentence with each candidate...")
     original = cfg.voice_sample
     synth = make_synthesizer(cfg, engine, log=log)
     synth.load()
@@ -208,7 +208,7 @@ def _score_candidates(candidates: list[Candidate], folder: Path, cfg: Config,
     try:
         from voice_similarity import SpeakerEncoder, cosine_percent
 
-        log.user("Har sample ki client se similarity naapi ja rahi hai...")
+        log.user("Scoring each sample against the client recording...")
         encoder = SpeakerEncoder()
         target = encoder.embed_file(source)
         for candidate, sample in samples:
@@ -216,4 +216,4 @@ def _score_candidates(candidates: list[Candidate], folder: Path, cfg: Config,
                 cosine_percent(target, encoder.embed_file(sample)), 1)
         encoder.free()
     except Exception as exc:
-        log.warning(f"similarity score nahi nikal saki: {exc}")
+        log.warning(f"Could not score similarity: {exc}")

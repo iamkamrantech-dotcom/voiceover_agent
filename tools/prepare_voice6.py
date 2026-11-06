@@ -97,14 +97,14 @@ def analyse(y: np.ndarray, sr: int) -> list[Window]:
     speech_floor = np.percentile(rms_db, 90) - 25.0
     voiced_all = rms_db > speech_floor
 
-    log("Pitch (f0) nikali ja rahi hai, thora waqt lagega...")
+    log("Measuring pitch (f0), this takes a moment...")
     f0 = librosa.yin(y, fmin=65, fmax=400, sr=sr,
                      frame_length=FRAME, hop_length=HOP)
 
     # The recording's own "typical" voice, used as the target to stay near.
     g_f0_med = float(np.median(f0[voiced_all[: len(f0)]]))
     g_level = float(np.median(rms_db[voiced_all]))
-    log(f"Typical awaaz: f0 {g_f0_med:.1f} Hz, level {g_level:.1f} dB")
+    log(f"Typical voice: f0 {g_f0_med:.1f} Hz, level {g_level:.1f} dB")
 
     win = int(CLIP_SECONDS * sr)
     step = int(STEP_SECONDS * sr)
@@ -178,7 +178,7 @@ def process(seg: np.ndarray, sr: int) -> np.ndarray:
         if np.isfinite(loud):
             filtered = ln.normalize.loudness(filtered, loud, TARGET_LUFS)
     except Exception as exc:
-        log(f"Warning: loudness normalize skip ({exc})")
+        log(f"Warning: skipped loudness normalisation ({exc})")
     peak = float(np.max(np.abs(filtered))) if filtered.size else 0.0
     if peak > 0.98:
         filtered = filtered * (0.98 / peak)
@@ -187,16 +187,16 @@ def process(seg: np.ndarray, sr: int) -> np.ndarray:
 
 def main() -> int:
     if not SOURCE.is_file():
-        log(f"Source nahi mila: {SOURCE}")
+        log(f"Source not found: {SOURCE}")
         return 1
 
-    log(f"Client recording load ho rahi hai: {SOURCE.name}")
+    log(f"Loading client recording: {SOURCE.name}")
     y, sr = librosa.load(str(SOURCE), sr=SR, mono=True)
-    log(f"Lambai {len(y) / sr:.1f}s. Har 10s window ka pehla 6s check hoga.")
+    log(f"Length {len(y) / sr:.1f}s. Scoring the first 6s of every 10s window.")
 
     wins = analyse(y, sr)
     if len(wins) < N_CLIPS:
-        log("Kaafi saaf windows nahi mile.")
+        log("Not enough clean windows found.")
         return 1
 
     picked = pick_spread(wins, N_CLIPS)
@@ -213,7 +213,7 @@ def main() -> int:
         print(f"  ref6_{i}.wav  score {w.score:6.1f} | {w.describe()}")
 
     print()
-    log(f"{len(picked)} naye reference clips tayyar hain.")
+    log(f"{len(picked)} new reference clips ready.")
     return 0
 
 

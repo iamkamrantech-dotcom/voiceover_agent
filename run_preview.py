@@ -81,10 +81,10 @@ def main() -> int:
     video = Path(args.video)
     script = Path(args.script)
     if not video.is_file():
-        log.error(f"Video nahi mila: {video}")
+        log.error(f"Video not found: {video}")
         return 1
     if not script.is_file():
-        log.error(f"Script nahi mili: {script}")
+        log.error(f"Script not found: {script}")
         return 1
 
     engine = (args.engine or cfg.tts_engine).lower()
@@ -93,7 +93,7 @@ def main() -> int:
         cfg.output_dir / f"{video.stem}_preview.mp4")
 
     started = time.perf_counter()
-    log.user(f"Shuru kar rahe hain: {video.name} + {script.name}")
+    log.user(f"Starting: {video.name} + {script.name}")
     log.user(f"Engine: {engine}, best-of-{best_of}"
              + (" (draft)" if args.draft else ""))
 
@@ -143,7 +143,7 @@ def main() -> int:
     print(f"  preview           : {out_path}")
     print(f"  took              : {time.perf_counter() - started:.1f}s")
 
-    log.user("Kaam mukammal. Preview dekh kar sync check karein.")
+    log.user("Done. Watch the preview to check the sync.")
     return 0 if not problems else 2
 
 

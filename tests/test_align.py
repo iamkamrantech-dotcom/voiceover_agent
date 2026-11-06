@@ -232,7 +232,7 @@ def main() -> int:
     missing = [n for n in ("cuts", "fades", "zoom")
                if not (MEDIA / f"{n}.mp4").is_file()]
     if missing:
-        log.user("Test videos nahi mile - pehle tests/make_test_videos.py chalayein.")
+        log.user("Test videos not found. Run tests/make_test_videos.py first.")
         return 1
 
     r = Results()
@@ -246,7 +246,7 @@ def main() -> int:
     print("=" * 96)
     ok = r.report()
     print()
-    log.user("Sab test pass ho gaye." if ok else "Kuch test fail hue.")
+    log.user("All tests passed." if ok else "Some tests failed.")
     return 0 if ok else 1
 
 

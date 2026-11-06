@@ -61,14 +61,14 @@ class RealVerifier:
         if self.encoder is None:
             from voice_similarity import SpeakerEncoder
 
-            self.log.user("Quality check ke models load ho rahe hain...")
+            self.log.user("Loading quality check models...")
             self.encoder = SpeakerEncoder()
             if self.cfg.voice_target.is_file():
                 self.target_embedding = self.encoder.embed_file(self.cfg.voice_target)
             else:
                 self.log.warning(
-                    f"VOICE_TARGET nahi mila ({self.cfg.voice_target.name}) - "
-                    f"similarity score nahi niklega."
+                    f"VOICE_TARGET not found ({self.cfg.voice_target.name}) - "
+                    f"similarity will not be measured."
                 )
 
         if self.whisper is None:
@@ -106,7 +106,7 @@ class RealVerifier:
                 emb = self.encoder.embed_file(wav)
                 similarity = round(cosine_percent(self.target_embedding, emb), 1)
             except Exception as exc:
-                self.log.warning(f"similarity nahi nikal saki: {exc}")
+                self.log.warning(f"Could not measure similarity: {exc}")
 
         words: list[WordTiming] = []
         transcript = ""

@@ -43,7 +43,8 @@ If a `reference/` folder exists, it holds an **earlier version of this project t
 3. **One focused module per job**, all inside `agent/`. A module does one thing. If a file starts doing two jobs, split it.
 4. **All settings come from `.env`** and are loaded into a single `Config` dataclass (`agent/config.py`). No magic numbers scattered in the code, no hardcoded paths.
 5. **Every phase has a test**, run on **generated test videos** (built by a helper that makes slideshows from coloured/sample images) — not on a file the user has to supply by hand.
-6. **User-facing log messages in simple Roman Urdu.** Example: `"Scene detect ho rahi hain..."`, `"Voice clone ho gaya, ab timing check kar raha hoon..."`. Internal/debug logs and all code, comments, docstrings and variable names stay in **English**.
+6. **Everything user-facing is clear, concise English, sentence case.** The dashboard, log lines, the script check table, the QC summary, CLI output and error messages. Example: `log.user("Detecting scenes...")`. No emoji, no exclamation marks, no filler. Errors say what went wrong and what to do: `"No scenes found. Run scene detection first."`
+   > **Changed in phase 8A.** User-facing text used to be Roman Urdu; 261 strings across 31 files were converted. Commits before `8A` read differently — that is history, not a style to copy.
 7. **Never claim a phase works until its test has actually been run** and the output inspected.
 
 ---

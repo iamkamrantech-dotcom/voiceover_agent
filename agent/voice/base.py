@@ -113,8 +113,8 @@ def make_converter(cfg: Config, name: str | None = None,
         return None
     # chatterbox_vc and rvc are planned; neither is wired up yet.
     raise ValueError(
-        f"VOICE_CONVERTER '{converter}' abhi available nahi hai. "
-        f"Filhal sirf 'none' chalega."
+        f"VOICE_CONVERTER '{converter}' is not available yet. "
+        f"Only 'none' works for now."
     )
 
 

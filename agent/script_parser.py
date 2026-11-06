@@ -277,7 +277,7 @@ def parse_script(script: str, scenes, cfg: Config | None = None,
     bounds = _scene_bounds(scenes)
     n_scenes = len(bounds)
     if n_scenes == 0:
-        raise ValueError("Koi scene nahi mila - pehle scene detection chalayein.")
+        raise ValueError("No scenes found. Run scene detection first.")
 
     script = script.strip()
     warnings: list[str] = []
@@ -293,10 +293,10 @@ def parse_script(script: str, scenes, cfg: Config | None = None,
             per_scene[target] = (per_scene[target] + " " + body).strip()
         if len(marked) > n_scenes:
             warnings.append(
-                f"Script mein {len(marked)} markers hain lekin video mein sirf "
-                f"{n_scenes} scenes - aakhri markers ko last scene mein jor diya."
+                f"The script has {len(marked)} markers but the video has only "
+                f"{n_scenes} scenes. The extra markers were merged into the last scene."
             )
-        log.user(f"Script markers mil gaye ({len(marked)}) - wohi use kar rahe hain.")
+        log.user(f"Found {len(marked)} script markers, using them.")
 
     else:
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n", script) if p.strip()]
@@ -305,24 +305,24 @@ def parse_script(script: str, scenes, cfg: Config | None = None,
         if len(paragraphs) == n_scenes and n_scenes > 1:
             method = "paragraphs"
             per_scene = paragraphs
-            log.user(f"{n_scenes} paragraphs aur {n_scenes} scenes - "
-                     f"har paragraph ek scene par.")
+            log.user(f"{n_scenes} paragraphs and {n_scenes} scenes, "
+                     f"one paragraph per scene.")
 
         # ---- 3. time-based split ------------------------------------------
         else:
             method = "time"
             sentences = split_sentences(script, max_chars=cfg.tts_max_chunk_chars)
             if not sentences:
-                raise ValueError("Script khali hai.")
+                raise ValueError("The script is empty.")
             durations = [end - start for start, end in bounds]
             groups = _dp_assign(sentences, durations, cfg.narration_wps)
             per_scene = [" ".join(sentences[i] for i in group) for group in groups]
-            log.user(f"Na markers na matching paragraphs - waqt ke hisab se "
-                     f"{len(sentences)} jumle {n_scenes} scenes par baante gaye.")
+            log.user(f"No markers and no matching paragraphs, so splitting by time: "
+                     f"{len(sentences)} sentences across {n_scenes} scenes.")
             if len(sentences) < n_scenes:
                 warnings.append(
-                    f"Sirf {len(sentences)} jumle hain magar {n_scenes} scenes - "
-                    f"kuch scenes par awaaz continue karegi."
+                    f"Only {len(sentences)} sentences for {n_scenes} scenes, so "
+                    f"narration will carry over some scenes."
                 )
 
     # attach timings
@@ -337,10 +337,10 @@ def parse_script(script: str, scenes, cfg: Config | None = None,
     video_seconds = bounds[-1][1] - bounds[0][0]
     if video_seconds > 0 and needed > video_seconds * cfg.script_overflow_ratio:
         over = needed - video_seconds
-        msg = (f"Script bohat lambi hai: {total_words} alfaaz ko bolne mein "
-               f"~{needed:.0f} second lagenge, lekin video sirf "
-               f"{video_seconds:.0f} second ki hai (~{over:.0f} second zyada). "
-               f"Ya script chhoti karein ya video lambi.")
+        msg = (f"The script is too long: {total_words} words take about "
+               f"{needed:.0f}s to speak, but the video is only "
+               f"{video_seconds:.0f}s long ({over:.0f}s over). "
+               f"Shorten the script or lengthen the video.")
         warnings.append(msg)
         log.warning(msg)
 
