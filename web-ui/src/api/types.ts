@@ -18,6 +18,20 @@ export interface JobResultFiles {
   qc_passed: boolean | null
   listen_to: { block: number; at: number | null; why: string }[]
   warnings: string[]
+  version: number
+}
+
+export type StageState = 'waiting' | 'running' | 'done' | 'failed'
+
+export interface StageRun {
+  stage: string
+  state: StageState
+  seconds: number
+}
+
+export interface StageDef {
+  key: string
+  label: string
 }
 
 export interface Job {
@@ -42,6 +56,10 @@ export interface Job {
   error: string
   params: Record<string, unknown>
   result: Partial<JobResultFiles>
+  kind: 'video' | 'revise' | 'voice'
+  version: number
+  cached_takes: number
+  stages: StageRun[]
 }
 
 export interface QueueSnapshot {
@@ -167,9 +185,37 @@ export interface VoiceState {
   profiles: VoiceProfile[]
 }
 
+export type SettingType = 'str' | 'int' | 'float' | 'bool' | 'password'
+
+export interface SettingItem {
+  key: string
+  label: string
+  help: string
+  type: SettingType
+  value: string | number | boolean | null
+  default: string | number | boolean
+  differs: boolean
+  choices: string[]
+  minimum: number | null
+  maximum: number | null
+  unit: string
+  /** False while a job is running, even for a setting that is editable. */
+  writable: boolean
+  /** Whether this setting can ever be changed from here. */
+  editable: boolean
+  restart_required: boolean
+}
+
+export interface SettingGroup {
+  name: string
+  help: string
+  settings: SettingItem[]
+}
+
 export interface Settings {
-  writable: Record<string, string | number | boolean>
-  readonly: Record<string, string | number>
+  groups: SettingGroup[]
+  locked: boolean
+  locked_reason: string
 }
 
 export interface TimelineBlock {
@@ -186,15 +232,133 @@ export interface TimelineBlock {
   scene_ids: number[]
 }
 
+export interface SubtitleCue {
+  index: number
+  start: number
+  end: number
+  text: string
+}
+
 export interface Timeline {
   source_duration: number
   output_duration: number
   total_extension: number
   fps: number
   blocks: TimelineBlock[]
+  cues: SubtitleCue[]
+}
+
+export interface Take {
+  seed: number
+  number: number
+  duration: number
+  similarity: number | null
+  words_ok: boolean
+  transcript: string
+  chosen: boolean
+  playable: boolean
+}
+
+export interface BlockDetail {
+  block: number
+  text: string
+  scene_ids: number[]
+  start: number
+  end: number
+  silent: boolean
+  duration: number
+  similarity: number | null
+  similarity_reliable: boolean
+  words_ok: boolean
+  transcript: string
+  seed: number | null
+  take_number: number
+  takes: Take[]
+}
+
+export interface BlocksResponse {
+  blocks: BlockDetail[]
+  /** False for jobs made before every take was kept. */
+  takes_recorded: boolean
+}
+
+export type ReviseAction = 'choose_take' | 'more_takes' | 'edit_text'
+
+export interface ReviseRequest {
+  block: number
+  action: ReviseAction
+  seed?: number
+  extra?: number
+  text?: string
+}
+
+export interface RevisionPlan {
+  block: number
+  action: ReviseAction
+  note: string
+  takes_to_make: number
+  words: number
+  estimate_seconds: number
+  steps: string[]
+  version: number
+}
+
+export interface JobVersion {
+  version: number
+  created: string
+  note: string
+  changes: Record<string, unknown>[]
+  video: string | null
+  subtitles: string | null
+  timeline: string | null
+  report: string | null
+  waveform: string | null
+  qc_passed: boolean | null
+  duration: number
+}
+
+export interface QCReport {
+  passed: boolean
+  duration_expected: number
+  duration_actual: number
+  duration_ok: boolean
+  loudness_i: number | null
+  loudness_tp: number | null
+  loudness_ok: boolean
+  clipping: boolean
+  peak_db: number | null
+  drift_applicable: boolean
+  drift_median: number | null
+  drift_p95: number | null
+  drift_max: number | null
+  drift_ok: boolean
+  matched_words: number
+  total_words: number
+  long_silences: { start: number; end: number; block: number }[]
+  listen_to: { block: number; at: number | null; why: string }[]
+  problems: string[]
+}
+
+export interface Waveform {
+  version: number
+  per_second: number
+  duration: number
+  /** Base64 of one byte per bucket: 0-255 peak amplitude. */
+  peaks: string
+}
+
+export type LogLevel = 'debug' | 'progress' | 'warning' | 'error'
+
+export interface LogLine {
+  t: string
+  level: LogLevel
+  text: string
 }
 
 export interface SSEMessage extends QueueSnapshot {
-  type: 'snapshot' | 'job'
+  type: 'snapshot' | 'job' | 'log'
   job?: Job | null
+  job_id?: string
+  line?: LogLine
+  log?: LogLine[]
 }

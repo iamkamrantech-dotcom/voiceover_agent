@@ -1,15 +1,24 @@
 import type {
+  BlocksResponse,
   FitResponse,
+  FitRow,
   Job,
+  JobVersion,
   JobsResponse,
+  LogLine,
   MachineInfo,
+  QCReport,
+  RevisionPlan,
+  ReviseRequest,
   Settings,
+  StageDef,
   Stats,
   Storyboard,
   Timeline,
   UploadResult,
   VoiceProfile,
   VoiceState,
+  Waveform,
 } from './types'
 
 export class ApiError extends Error {
@@ -41,6 +50,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+/** Version 1 is the plain path, so links to it stay what they always were. */
+function versionQuery(version?: number): string {
+  return version && version > 1 ? `?v=${version}` : ''
 }
 
 function json(body: unknown): RequestInit {
@@ -95,7 +109,44 @@ export const api = {
 
   jobs: () => request<JobsResponse>('/api/jobs'),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
-  timeline: (id: string) => request<Timeline>(`/api/jobs/${id}/timeline`),
+  timeline: (id: string, version?: number) =>
+    request<Timeline>(`/api/jobs/${id}/timeline${versionQuery(version)}`),
+  qc: (id: string, version?: number) =>
+    request<QCReport>(`/api/jobs/${id}/qc${versionQuery(version)}`),
+  waveform: (id: string, version?: number) =>
+    request<Waveform>(`/api/jobs/${id}/waveform${versionQuery(version)}`),
+  blocks: (id: string) => request<BlocksResponse>(`/api/jobs/${id}/blocks`),
+  jobFit: (
+    id: string,
+    blocks: { block: number; text: string }[],
+    signal?: AbortSignal,
+  ) =>
+    request<{ rows: FitRow[] }>(`/api/jobs/${id}/fit`, {
+      ...json({ blocks }),
+      signal: signal ?? null,
+    }),
+  jobLog: (id: string) =>
+    request<{ lines: LogLine[]; live: LogLine[] }>(`/api/jobs/${id}/log`),
+  versions: (id: string) =>
+    request<{ versions: JobVersion[] }>(`/api/jobs/${id}/versions`),
+  deleteVersion: (id: string, version: number) =>
+    request<{ ok: boolean; message: string }>(
+      `/api/jobs/${id}/versions/${version}`,
+      { method: 'DELETE' },
+    ),
+  config: () => request<{ stages: StageDef[]; engine: string }>('/api/config'),
+
+  planRevision: (id: string, body: ReviseRequest) =>
+    request<RevisionPlan>(`/api/jobs/${id}/revise/plan`, json(body)),
+  revise: (id: string, body: ReviseRequest) =>
+    request<{ ok: boolean; id: string }>(`/api/jobs/${id}/revise`, json(body)),
+
+  takeUrl: (id: string, block: number, seed: number) =>
+    `/api/jobs/${id}/take?block=${block}&seed=${seed}`,
+  blockAudioUrl: (id: string, block: number) =>
+    `/api/jobs/${id}/block-audio?block=${block}`,
+  keyframeUrl: (id: string, scene: number) =>
+    `/api/jobs/${id}/keyframe/${scene}`,
 
   createJob: (body: {
     video: string
@@ -120,21 +171,34 @@ export const api = {
   deleteJob: (id: string) =>
     request<{ ok: boolean }>(`/api/jobs/${id}`, { method: 'DELETE' }),
 
-  fileUrl: (id: string, kind: 'video' | 'subtitles' | 'report' | 'timeline') =>
-    `/api/jobs/${id}/file/${kind}`,
+  fileUrl: (
+    id: string,
+    kind: 'video' | 'subtitles' | 'report' | 'timeline',
+    version?: number,
+  ) => `/api/jobs/${id}/file/${kind}${versionQuery(version)}`,
 
   voice: () => request<VoiceState>('/api/voice'),
   voiceAudioUrl: (path: string) =>
     `/api/voice/audio?path=${encodeURIComponent(path)}`,
+  /** Queues the work and returns the job that will do it. */
   prepareVoice: (recording: File, name: string) => {
     const form = new FormData()
     form.append('recording', recording)
     form.append('name', name)
-    return request<VoiceProfile>('/api/voice/prepare', {
+    return request<{ id: string; name: string }>('/api/voice/prepare', {
       method: 'POST',
       body: form,
     })
   },
+  renameVoice: (profile: string, name: string) =>
+    request<VoiceProfile>(`/api/voice/${encodeURIComponent(profile)}`, {
+      ...json({ name }),
+      method: 'PATCH',
+    }),
+  deleteVoice: (profile: string) =>
+    request<{ ok: boolean }>(`/api/voice/${encodeURIComponent(profile)}`, {
+      method: 'DELETE',
+    }),
   activateVoice: (profile: string, candidate: string) => {
     const form = new FormData()
     form.append('profile', profile)
@@ -146,9 +210,12 @@ export const api = {
   },
 
   settings: () => request<Settings>('/api/settings'),
-  saveSettings: (values: Record<string, string | number | boolean>) =>
+  saveSettings: (
+    values: Record<string, string | number | boolean>,
+    reset: string[] = [],
+  ) =>
     request<Settings>('/api/settings', {
-      ...json(values),
+      ...json({ values, reset }),
       method: 'PUT',
     }),
 }

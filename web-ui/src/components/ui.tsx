@@ -1,4 +1,6 @@
-import { forwardRef, useEffect, useRef, type ReactNode } from 'react'
+import {
+  forwardRef, useEffect, useRef, useState, type ReactNode,
+} from 'react'
 import type { JobState } from '../api/types'
 
 /* ---------------------------------------------------------------- panel */
@@ -183,7 +185,12 @@ export function Field({
 export const inputClass =
   'w-full rounded-md border border-border bg-bg px-3 py-2 text-base ' +
   'placeholder:text-faint focus:border-accent focus:outline-none ' +
-  'focus-visible:outline-2 focus-visible:outline-accent'
+  'focus-visible:outline-2 focus-visible:outline-accent ' +
+  // A control that cannot be used has to look like it. Settings lock while
+  // a job runs, and an untouchable field that looks editable reads as a
+  // broken page rather than a deliberate state.
+  'disabled:cursor-not-allowed disabled:bg-raised disabled:text-muted ' +
+  'disabled:border-border'
 
 /* ----------------------------------------------------------- checkbox */
 
@@ -193,12 +200,14 @@ export function Checkbox({
   checked,
   onChange,
   id,
+  disabled = false,
 }: {
   label: string
   description?: string
   checked: boolean
   onChange: (value: boolean) => void
   id: string
+  disabled?: boolean
 }) {
   return (
     <div className="flex items-start gap-2.5">
@@ -206,10 +215,16 @@ export function Checkbox({
         id={id}
         type="checkbox"
         checked={checked}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 h-4 w-4 accent-[var(--accent)]"
+        className="mt-0.5 h-4 w-4 accent-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
       />
-      <label htmlFor={id} className="cursor-pointer select-none">
+      <label
+        htmlFor={id}
+        className={disabled
+          ? 'cursor-not-allowed select-none text-muted'
+          : 'cursor-pointer select-none'}
+      >
         <span className="block text-base">{label}</span>
         {description && (
           <span className="block text-xs text-faint">{description}</span>
@@ -229,14 +244,16 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   destructive = false,
+  busy = false,
 }: {
   open: boolean
   title: string
-  body: string
+  body: ReactNode
   confirmLabel: string
   onConfirm: () => void
   onCancel: () => void
   destructive?: boolean
+  busy?: boolean
 }) {
   const confirmRef = useRef<HTMLButtonElement>(null)
 
@@ -268,18 +285,134 @@ export function ConfirmDialog({
         <h2 id="confirm-title" className="text-md font-semibold">
           {title}
         </h2>
-        <p className="mt-1.5 text-base text-muted">{body}</p>
+        <div className="mt-1.5 text-base text-muted">
+          {typeof body === 'string' ? <p>{body}</p> : body}
+        </div>
         <div className="mt-5 flex justify-end gap-2">
           <Button onClick={onCancel}>Cancel</Button>
           <Button
             ref={confirmRef}
             variant={destructive ? 'danger' : 'primary'}
             onClick={onConfirm}
+            disabled={busy}
           >
-            {confirmLabel}
+            {busy ? 'Working…' : confirmLabel}
           </Button>
         </div>
       </div>
+    </div>
+  )
+}
+
+/* --------------------------------------------------------------- drawer */
+
+/**
+ * A side panel. Over the page below 1280px, beside it above - the block
+ * review needs to sit next to the timeline on a desktop and cannot on a
+ * phone.
+ */
+export function Drawer({
+  open,
+  title,
+  onClose,
+  children,
+  footer,
+}: {
+  open: boolean
+  title: string
+  onClose: () => void
+  children: ReactNode
+  footer?: ReactNode
+}) {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  if (!open) return null
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end">
+      <div
+        className="absolute inset-0"
+        style={{ background: 'rgb(0 0 0 / 0.45)' }}
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="relative flex h-full w-full max-w-[460px] flex-col border-l border-border bg-surface"
+        style={{ boxShadow: 'var(--shadow-pop)' }}
+      >
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <h2 className="truncate text-[14px] font-semibold">{title}</h2>
+          <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close">
+            Close
+          </Button>
+        </header>
+        <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+        {footer && (
+          <footer className="shrink-0 border-t border-border p-4">
+            {footer}
+          </footer>
+        )}
+      </aside>
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------- popover */
+
+export function Popover({
+  label,
+  title,
+  children,
+}: {
+  label: string
+  title: string
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  return (
+    <div className="relative" ref={box}>
+      <Button size="sm" variant="ghost" onClick={() => setOpen(!open)}
+              aria-expanded={open}>
+        {label}
+      </Button>
+      {open && (
+        <div
+          role="dialog"
+          aria-label={title}
+          className="absolute right-0 z-30 mt-1 w-64 rounded-md border border-border bg-surface p-3"
+          style={{ boxShadow: 'var(--shadow-pop)' }}
+        >
+          <h3 className="mb-2 text-xs font-semibold text-muted">{title}</h3>
+          {children}
+        </div>
+      )}
     </div>
   )
 }

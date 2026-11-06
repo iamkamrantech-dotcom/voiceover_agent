@@ -13,7 +13,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  timeout: 90_000,
+  // Generous, because one job runs at a time: a test can legitimately be
+  // waiting behind work an earlier one started.
+  timeout: 240_000,
   expect: { timeout: 15_000 },
   reporter: [['list']],
   use: {
@@ -42,6 +44,18 @@ export default defineConfig({
       LOG_DIR: 'outputs/_e2e/logs',
       API_PORT: String(PORT),
       APP_PASSWORD: '',
+      // Three takes per block, so the review panel has something to choose
+      // between - a draft would otherwise make exactly one.
+      TTS_BEST_OF_N_DRAFT: '3',
+      // Voice profiles and .env are real state. The tests change both, so
+      // they are pointed somewhere disposable - activating a test voice in
+      // the real folder would change what every future job sounds like.
+      VOICES_DIR: 'outputs/_e2e/voices',
+      ENV_FILE: 'outputs/_e2e/.env',
+      // The mock engine finishes in under a second, which makes any
+      // assertion about a RUNNING job a race. This slows each take enough
+      // to watch it happen, and nothing else uses it.
+      MOCK_DELAY: '0.45',
     },
   },
 })

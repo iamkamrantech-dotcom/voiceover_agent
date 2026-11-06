@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Route, Routes, useLocation } from 'react-router-dom'
+import { NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { api } from './api/client'
 import { useLive } from './api/useLive'
 import { ToastProvider } from './components/Toast'
@@ -106,10 +106,33 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   )
 }
 
+/** `n` starts a new video from anywhere, unless you are typing. */
+function useNewVideoShortcut() {
+  const navigate = useNavigate()
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'n' || e.metaKey || e.ctrlKey || e.altKey) return
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (target?.isContentEditable) return
+      e.preventDefault()
+      navigate('/new')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [navigate])
+}
+
 export default function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [gate, setGate] = useState<'checking' | 'locked' | 'open'>('checking')
   const location = useLocation()
+  useNewVideoShortcut()
+
+  // The job page carries a player, a timeline and a side panel, which do
+  // not fit the reading width the rest of the dashboard uses.
+  const wide = /^\/jobs\/[^/]+$/.test(location.pathname)
 
   useEffect(() => {
     setMenuOpen(false)
@@ -171,7 +194,11 @@ export default function App() {
           </header>
 
           <main className="min-w-0 flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-[1100px] p-4 sm:p-6">
+            <div
+              className={`mx-auto w-full p-4 sm:p-6 ${
+                wide ? 'max-w-[1440px]' : 'max-w-[1100px]'
+              }`}
+            >
               <Routes>
                 <Route path="/" element={<Overview />} />
                 <Route path="/new" element={<NewVideo />} />

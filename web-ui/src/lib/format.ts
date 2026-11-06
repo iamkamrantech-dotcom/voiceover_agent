@@ -47,6 +47,14 @@ export function when(iso: string): string {
   })} ${time}`
 }
 
+/** The last part of a path. Nobody needs to read someone's home directory
+ *  off a dashboard, and the full path is still there in a title. */
+export function fileName(path: string): string {
+  if (!path) return '—'
+  const parts = path.split(/[\\/]/)
+  return parts[parts.length - 1] || path
+}
+
 export function percent(value: number | null | undefined): string {
   if (value === null || value === undefined || !isFinite(value)) return '—'
   return `${value.toFixed(1)}%`

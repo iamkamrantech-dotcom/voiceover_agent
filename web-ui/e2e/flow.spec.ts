@@ -36,8 +36,10 @@ test('full new video flow reaches a finished job', async ({ page }) => {
 
   // Lands on the job page and finishes.
   await expect(page).toHaveURL(/\/jobs\/\w+/)
+  // One job runs at a time by design, so this may be waiting behind a job
+  // an earlier test started as well as doing its own work.
   await expect(page.getByText('Quality checks passed.')).toBeVisible({
-    timeout: 80_000,
+    timeout: 180_000,
   })
   await expect(page.getByRole('link', { name: 'Download video' })).toBeVisible()
 })
@@ -72,8 +74,10 @@ test('a running job shows live progress without polling', async ({ page }) => {
   if (await stage.isVisible().catch(() => false)) {
     await expect(stage).not.toBeEmpty()
   }
+  // One job runs at a time by design, so this may be waiting behind a job
+  // an earlier test started as well as doing its own work.
   await expect(page.getByText('Quality checks passed.')).toBeVisible({
-    timeout: 80_000,
+    timeout: 180_000,
   })
 
   // The top bar reports the queue from the same stream on every page.
