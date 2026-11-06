@@ -17,6 +17,7 @@ cache and never made again.
 from __future__ import annotations
 
 import json
+import queue
 import sys
 import threading
 import time
@@ -143,8 +144,43 @@ class JobManager:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
+        # SSE listeners. status.json is already written on every change, so
+        # publishing from write() means the stream cannot miss an update
+        # that made it to disk.
+        self._subscribers: list[queue.Queue] = []
 
         self._recover()
+
+    # -- live updates ------------------------------------------------------
+
+    def subscribe(self) -> queue.Queue:
+        listener: queue.Queue = queue.Queue(maxsize=200)
+        with self._lock:
+            self._subscribers.append(listener)
+        return listener
+
+    def unsubscribe(self, listener: queue.Queue) -> None:
+        with self._lock:
+            if listener in self._subscribers:
+                self._subscribers.remove(listener)
+
+    def _publish(self, payload: dict) -> None:
+        with self._lock:
+            listeners = list(self._subscribers)
+        for listener in listeners:
+            try:
+                listener.put_nowait(payload)
+            except queue.Full:
+                # A listener that cannot keep up is dropped rather than
+                # allowed to block the worker thread.
+                self.unsubscribe(listener)
+
+    def snapshot(self) -> dict:
+        """What the top bar needs: who is running and how many are waiting."""
+        with self._lock:
+            queued = list(self._queue)
+            current = self._current
+        return {"running": current, "queued": len(queued), "queue": queued}
 
     # -- persistence -------------------------------------------------------
 
@@ -168,8 +204,10 @@ class JobManager:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Write then move, so a crash mid-write cannot corrupt the file.
         temp = path.with_suffix(".tmp")
-        temp.write_text(json.dumps(status.to_dict(), indent=2), encoding="utf-8")
+        data = status.to_dict()
+        temp.write_text(json.dumps(data, indent=2), encoding="utf-8")
         temp.replace(path)
+        self._publish({"type": "job", "job": data, **self.snapshot()})
 
     def all_jobs(self) -> list[JobStatus]:
         out = []

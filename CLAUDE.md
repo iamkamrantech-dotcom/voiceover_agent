@@ -80,8 +80,10 @@ Voiceover_Agent/
 │   ├── pipeline.py       # [done] the whole job + script check
 │   ├── jobs.py           # [done] queue, progress, cancel, resume
 │   └── voice_profiles.py # [done] client voice candidates + history
-├── server.py             # [done] FastAPI web app
-├── web/                  # [done] index.html, login.html, static/
+├── server.py             # [done] FastAPI web app + SSE
+├── web-ui/               # [done] React + TS + Vite + Tailwind source
+├── web/dist/             # [done] built dashboard, COMMITTED on purpose
+├── tools/node/           # portable Node, build tool only (gitignored)
 ├── voices/               # client voice profiles (gitignored)
 ├── start.bat             # [done] double-click to run everything
 ├── run.py                # [done] CLI: full job, or --check-script
@@ -409,6 +411,38 @@ Progress reporting threads a `progress`/`cancel` pair through `run_job` → `run
 Upload a client recording → candidates are cut with the §4b-2 first-6-seconds rule → each clones a test sentence → ECAPA scores them against the full recording → pick one. Profiles live in `voices/<name>/` and are never deleted, so switching back is always possible. The active choice is `voices/active.json`, which **overrides `VOICE_SAMPLE`** in `Config.load()`.
 
 Tests: `tests/test_server.py`, **23/23**, including a mid-job kill and resume that verifies all 8 cached takes are untouched.
+
+---
+
+## 4i. The dashboard (phase 8A)
+
+React + TypeScript (strict) + Vite + Tailwind in `web-ui/`, built to `web/dist/`, which **is committed** so running the app still needs only Python. Node lives in `tools/node/` (gitignored) and is a build tool only — never a runtime dependency.
+
+```
+tools\node\npm.cmd --prefix web-ui install     # needs tools/node on PATH
+tools\node\npm.cmd --prefix web-ui run build   # -> web/dist
+```
+
+Anthropic's **`frontend-design`** plugin is installed and was followed.
+
+**Design tokens** live in `web-ui/src/index.css` as CSS variables, mapped into Tailwind with `@theme inline`. One accent (signal blue), a cool-neutral grey ramp, semantic colours that only ever mean something, a 4px spacing scale, three radii, Inter with `tabular-nums` on every number a person compares down a column. Dark and light follow the system with a manual override persisted in `localStorage` and applied before first paint so the page never flashes.
+
+**Live updates are SSE, not polling.** `JobManager` publishes on every `status.json` write, so the stream can never report something that did not reach disk; `useLive()` opens with a snapshot so a dropped connection resynchronises.
+
+**The storyboard is the point of the whole UI.** Each scene shows its keyframe next to its own editable narration, with a fit bar underneath that re-checks as you type (debounced 400 ms). On generate, the blocks are written as a `Scene N:` marker script, so `MARKER_RE` reproduces exactly the mapping shown on screen — what you saw is what gets made.
+
+**Fit maths has one implementation**, `fit_row()` in `agent/pipeline.py`, shared by the CLI check and the dashboard, so the two cannot disagree.
+
+### What the design review caught
+
+Screenshots at 1440 and 390 in both themes, reviewed and fixed:
+
+- The fit bar said **"Fits"** beside "3.6s speech / 3.4s available" and drew a red overhang. Both were true (the 8% speed-up absorbs it) but together they read as broken. Now: *"Fits with a slight speed-up"* with an accent overhang, and red only when words actually have to be cut.
+- The whole Overview sat in skeletons because four calls were bundled in one `Promise.all` and `/api/machine` walked a 7 GB model cache on every request. Panels now load independently and the cache scan is held for two minutes.
+- Lazy-loaded keyframes left blank boxes while scrolling the storyboard. These are small JPEGs from localhost; lazy loading bought nothing and cost the thumbnails their point.
+- Bare em dashes for unmeasured stats read as a bug, so they now say *"no measurements yet"*.
+
+Tests: `web-ui/e2e/`, **10/10** Playwright specs against the real server with `TTS_ENGINE=mock`.
 
 ---
 

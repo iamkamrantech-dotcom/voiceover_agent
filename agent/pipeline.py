@@ -74,33 +74,43 @@ def make_job_dir(cfg: Config, stem: str) -> Path:
 # script check - no models, runs in seconds
 # --------------------------------------------------------------------------
 
+def fit_row(index: int, scene_ids: list[int], start: float, end: float,
+            words: int, is_final: bool, cfg: Config) -> ScriptCheckRow:
+    """How well `words` of narration fits the window `start`-`end`.
+
+    One implementation, used by both the CLI check and the dashboard
+    storyboard, so the two can never disagree about whether a block fits.
+    """
+    tail = cfg.tail_out_final if is_final else max(
+        cfg.tail_out, cfg.block_gap - cfg.lead_in)
+    available = (end - start) - cfg.lead_in - tail
+    estimated = words / cfg.narration_wps if cfg.narration_wps > 0 else 0.0
+
+    # Pause tightening cannot be predicted without audio, so this
+    # deliberately assumes only the speed-up ceiling can help.
+    extension = max(0.0, estimated - available * cfg.max_speedup)
+    cut_words = 0
+    if extension > cfg.freeze_warn_seconds:
+        cut_words = int(math.ceil(
+            (extension - cfg.freeze_warn_seconds) * cfg.narration_wps))
+
+    return ScriptCheckRow(
+        block=index, scene_ids=list(scene_ids), start=start, end=end,
+        words=words, estimated=estimated, available=available,
+        extension=extension, cut_words=cut_words,
+    )
+
+
 def check_script(video: Path, script: Path, cfg: Config,
                  log) -> tuple[ScriptSplit, list[ScriptCheckRow]]:
     detection = detect_scenes(video, cfg, log=log)
     split = parse_script_file(script, detection.scenes, cfg, log)
 
-    rows: list[ScriptCheckRow] = []
-    for position, block in enumerate(split.blocks):
-        is_final = position == len(split.blocks) - 1
-        tail = cfg.tail_out_final if is_final else max(
-            cfg.tail_out, cfg.block_gap - cfg.lead_in)
-        available = (block.end - block.start) - cfg.lead_in - tail
-        estimated = block.estimated_speech_seconds(cfg.narration_wps)
-
-        # Pause tightening cannot be predicted without audio, so this
-        # deliberately assumes only the speed-up ceiling can help.
-        extension = max(0.0, estimated - available * cfg.max_speedup)
-        cut_words = 0
-        if extension > cfg.freeze_warn_seconds:
-            cut_words = int(math.ceil(
-                (extension - cfg.freeze_warn_seconds) * cfg.narration_wps))
-
-        rows.append(ScriptCheckRow(
-            block=block.index, scene_ids=list(block.scene_ids),
-            start=block.start, end=block.end, words=block.word_count,
-            estimated=estimated, available=available,
-            extension=extension, cut_words=cut_words,
-        ))
+    rows = [
+        fit_row(block.index, block.scene_ids, block.start, block.end,
+                block.word_count, position == len(split.blocks) - 1, cfg)
+        for position, block in enumerate(split.blocks)
+    ]
     return split, rows
 
 
