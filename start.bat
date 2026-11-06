@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 if not exist "venv\Scripts\python.exe" (
   echo.
-  echo   venv nahi mila. Pehle ye chalayein:
+  echo   No venv found. Run these first:
   echo       py -3.11 -m venv venv
   echo       venv\Scripts\python.exe -m pip install -r requirements.txt
   echo.
@@ -22,7 +22,7 @@ venv\Scripts\python.exe server.py
 
 if errorlevel 1 (
   echo.
-  echo   Server band ho gaya. Upar wali error dekh lein.
+  echo   The server stopped. Check the error above.
   pause
 )
 endlocal
