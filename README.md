@@ -26,27 +26,47 @@ right image, nothing is cut off mid-word, no long dead air, no rushing.
 
 ---
 
-## Setup — one time
+## Setup — one time (the easy way)
 
-Open **Command Prompt** and run these, line by line:
+Open **Command Prompt** and run these two lines to get Git and download the
+project:
 
 ```cmd
+winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements
 git clone https://github.com/iamkamrantech-dotcom/voiceover_agent.git
-cd voiceover_agent
-
-py -3.11 -m venv venv
-
-venv\Scripts\python.exe -m pip install --upgrade pip
-
-REM torch MUST come from the CPU index first, or pip pulls a 2.5 GB CUDA build this can't use
-venv\Scripts\python.exe -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
-
-venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+Then go into the folder and run the setup script:
+
+```cmd
+cd voiceover_agent
+setup.bat
+```
+
+**`setup.bat` checks what is already on your PC and installs only what is
+missing** — Python 3.11, FFmpeg, the Visual C++ Redistributable — then builds
+the Python environment for you. If it installs something new, it will ask you
+to close the window and run `setup.bat` once more in a fresh Command Prompt
+(so Windows sees the new programs). Run it until it says **"Setup complete."**
 
 That's the whole install. (The first time you actually generate a video, it
 downloads the voice/transcription models from Hugging Face, ~7 GB — one time,
 then cached.)
+
+<details>
+<summary>Prefer to do it by hand instead of setup.bat?</summary>
+
+```cmd
+cd voiceover_agent
+py -3.11 -m venv venv
+venv\Scripts\python.exe -m pip install --upgrade pip
+REM torch MUST come from the CPU index first, or pip pulls a 2.5 GB CUDA build this can't use
+venv\Scripts\python.exe -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+You still need FFmpeg and the VC++ Redistributable on the PC (see the table
+above).
+</details>
 
 ---
 
