@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -72,6 +74,14 @@ class MockSynthesizer:
     def synthesize(self, text: str, out_path: Path,
                    seed: int | None = None) -> SynthResult:
         import soundfile as sf
+
+        # The real engine takes minutes per take; this one takes a
+        # millisecond, which makes any test of a RUNNING job a race against
+        # itself. MOCK_DELAY buys back enough time to watch one happen, and
+        # nothing outside the end-to-end tests ever sets it.
+        delay = float(os.environ.get("MOCK_DELAY", "0") or 0)
+        if delay > 0:
+            time.sleep(delay)
 
         seed = 0 if seed is None else seed
         words = text.split()

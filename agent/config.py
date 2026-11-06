@@ -78,6 +78,20 @@ def _path(key: str, default: str) -> Path:
     return p if p.is_absolute() else (PROJECT_ROOT / p)
 
 
+def voices_dir() -> Path:
+    """Where client voice profiles live.
+
+    Configurable so the end-to-end tests cannot touch the real ones -
+    activating a test voice would change what every future job sounds like.
+    """
+    return _path("VOICES_DIR", "voices")
+
+
+def env_file_path() -> Path:
+    """The .env the dashboard reads and writes. Same reason."""
+    return _path("ENV_FILE", ".env")
+
+
 @dataclass
 class Config:
     """All runtime settings. Build it with Config.load()."""
@@ -247,7 +261,7 @@ class Config:
     @classmethod
     def load(cls, env_file: Path | str | None = None) -> "Config":
         """Read .env (if present) and build the config."""
-        env_path = Path(env_file) if env_file else (PROJECT_ROOT / ".env")
+        env_path = Path(env_file) if env_file else env_file_path()
         if env_path.is_file():
             load_dotenv(env_path, override=False)
 
@@ -257,7 +271,7 @@ class Config:
         # explicit "this is the client's current voice" decision, and .env
         # would otherwise quietly undo it. Read directly rather than import
         # voice_profiles, which imports this module.
-        active = PROJECT_ROOT / "voices" / "active.json"
+        active = voices_dir() / "active.json"
         if active.is_file():
             try:
                 data = json.loads(active.read_text(encoding="utf-8"))

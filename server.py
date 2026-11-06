@@ -35,7 +35,7 @@ from agent import log as agent_log  # noqa: E402
 from agent import settings_schema  # noqa: E402
 from agent import versions  # noqa: E402
 from agent import voice_profiles  # noqa: E402
-from agent.config import Config  # noqa: E402
+from agent.config import Config, env_file_path  # noqa: E402
 from agent.jobs import STAGE_LABELS, JobManager, estimate_seconds  # noqa: E402
 from agent.pipeline import check_script, fit_row, script_check_table  # noqa: E402
 from agent.revise import (  # noqa: E402
@@ -637,6 +637,48 @@ def job_blocks(job_id: str) -> dict:
     return {"blocks": out, "takes_recorded": complete}
 
 
+@app.post("/api/jobs/{job_id}/fit", dependencies=[Depends(require_login)])
+async def job_fit(job_id: str, request: Request) -> dict:
+    """How well a block's text fits its own scenes.
+
+    The storyboard's check works from the upload folder, which a job does
+    not need and may outlive. This works from what the job itself recorded,
+    so the review panel can show the consequence of an edit before anything
+    is generated - and it is the same fit_row() the storyboard uses, so the
+    two cannot disagree.
+    """
+    folder = _job_folder(job_id)
+    try:
+        blocks = load_blocks(folder)
+    except ReviseError as exc:
+        raise HTTPException(404, str(exc))
+
+    body = await _body(request)
+    edits = {int(item["block"]): str(item.get("text") or "")
+             for item in (body.get("blocks") or [])}
+
+    last = max((b.block_index for b in blocks), default=0)
+    rows = []
+    for block in blocks:
+        text = edits.get(block.block_index, block.text)
+        row = fit_row(block.block_index, block.scene_ids, block.scene_start,
+                      block.scene_end, len(text.split()),
+                      block.block_index == last, cfg)
+        rows.append({
+            "scene": block.block_index,
+            "words": row.words,
+            "estimated": row.estimated,
+            "available": row.available,
+            "extension": row.extension,
+            "cut_words": row.cut_words,
+            "state": ("empty" if not text.strip()
+                      else "over" if row.cut_words > 0
+                      else "tight" if row.extension > 0.05
+                      else "fits"),
+        })
+    return {"rows": rows}
+
+
 @app.get("/api/jobs/{job_id}/take", dependencies=[Depends(require_login)])
 def job_take(job_id: str, block: int, seed: int):
     """Play one take.
@@ -710,6 +752,7 @@ async def revise(job_id: str, request: Request) -> dict:
 
 async def _event_stream(request: Request, job_id: str | None):
     listener = manager.subscribe()
+    idle = 0
     try:
         first = {"type": "snapshot", **manager.snapshot()}
         if job_id:
@@ -722,13 +765,22 @@ async def _event_stream(request: Request, job_id: str | None):
             if await request.is_disconnected():
                 break
             try:
-                payload = listener.get(timeout=0.5)
+                payload = listener.get_nowait()
             except Exception:
-                # Nothing happened; a comment keeps the connection warm
-                # without pretending there was an update.
-                yield ": keepalive\n\n"
-                await asyncio.sleep(0)
+                # Nothing to send. Wait by yielding to the event loop, NOT by
+                # blocking on the queue: this is an async generator, and a
+                # blocking get here stalls the whole server for its timeout -
+                # every other request, and every other stream, waits behind
+                # it. With a stream per page plus one for the top bar that
+                # was enough to make the dashboard stutter and the event
+                # stream drop.
+                idle += 1
+                if idle >= 5:          # a comment every ~0.5s of silence
+                    idle = 0
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(0.1)
                 continue
+            idle = 0
 
             if payload.get("type") == "log":
                 # Log lines only go to the stream watching that job. The
@@ -792,7 +844,7 @@ def voice_state() -> dict:
 @app.get("/api/voice/audio", dependencies=[Depends(require_login)])
 def voice_audio(path: str):
     target = Path(path).resolve()
-    allowed = [(PROJECT_ROOT / "voices").resolve(),
+    allowed = [voice_profiles.voices_root().resolve(),
                (PROJECT_ROOT / "input").resolve()]
     # Only ever serve audio from the voice folders, never an arbitrary path.
     if not any(str(target).startswith(str(root)) for root in allowed):
@@ -893,7 +945,7 @@ def _write_env(changes: dict[str, str], remove: list[str]) -> None:
     """
     import os
 
-    env_path = PROJECT_ROOT / ".env"
+    env_path = env_file_path()
     lines = env_path.read_text(encoding="utf-8").splitlines() \
         if env_path.is_file() else []
 
@@ -1022,6 +1074,24 @@ def spa(full_path: str):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Closing a browser tab drops its event stream mid-write, which on
+    # Windows surfaces as a ConnectionResetError raised inside an asyncio
+    # callback - a five-line traceback in the console every time someone
+    # navigates away. It is not a fault, and printing it as one trains
+    # people to ignore the console.
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+
+    def quiet(active_loop, context):
+        error = context.get("exception")
+        if isinstance(error, (ConnectionResetError, ConnectionAbortedError)):
+            return
+        if previous:
+            previous(active_loop, context)
+        else:
+            active_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(quiet)
     yield
     manager.shutdown()
 

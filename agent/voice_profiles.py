@@ -29,12 +29,20 @@ TOOLS = PROJECT_ROOT / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
-from agent.config import Config  # noqa: E402
+from agent.config import Config, voices_dir  # noqa: E402
 from agent import log as agent_log  # noqa: E402
 from agent.voice_stage import _check  # noqa: E402
 
-VOICES_DIR = PROJECT_ROOT / "voices"
-ACTIVE_FILE = VOICES_DIR / "active.json"
+def voices_root() -> Path:
+    """Where profiles live. Read on every call rather than captured at
+    import, so the end-to-end tests can point it somewhere disposable -
+    activating a test voice in the real folder would change what every
+    future job sounds like."""
+    return voices_dir()
+
+
+def active_file() -> Path:
+    return voices_root() / "active.json"
 TEST_SENTENCE = ("Welcome back to the channel. Today we are looking at five "
                  "places you have never heard of.")
 
@@ -63,14 +71,14 @@ class Profile:
 
 
 def profile_dir(name: str) -> Path:
-    return VOICES_DIR / name
+    return voices_root() / name
 
 
 def list_profiles() -> list[Profile]:
     out: list[Profile] = []
-    if not VOICES_DIR.is_dir():
+    if not voices_root().is_dir():
         return out
-    for folder in sorted(VOICES_DIR.iterdir(), reverse=True):
+    for folder in sorted(voices_root().iterdir(), reverse=True):
         meta = folder / "profile.json"
         if folder.is_dir() and meta.is_file():
             try:
@@ -82,10 +90,10 @@ def list_profiles() -> list[Profile]:
 
 def active_reference() -> Path | None:
     """The reference clip Config should clone from, if one has been set."""
-    if not ACTIVE_FILE.is_file():
+    if not active_file().is_file():
         return None
     try:
-        data = json.loads(ACTIVE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(active_file().read_text(encoding="utf-8"))
         path = Path(data["reference"])
         return path if path.is_file() else None
     except Exception:
@@ -93,10 +101,10 @@ def active_reference() -> Path | None:
 
 
 def active_info() -> dict | None:
-    if not ACTIVE_FILE.is_file():
+    if not active_file().is_file():
         return None
     try:
-        return json.loads(ACTIVE_FILE.read_text(encoding="utf-8"))
+        return json.loads(active_file().read_text(encoding="utf-8"))
     except Exception:
         return None
 
@@ -114,8 +122,8 @@ def set_active(profile_name: str, candidate: str, log=None) -> dict:
         "source": str(source) if source else None,
         "set_at": datetime.now().isoformat(timespec="seconds"),
     }
-    VOICES_DIR.mkdir(parents=True, exist_ok=True)
-    ACTIVE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    voices_root().mkdir(parents=True, exist_ok=True)
+    active_file().write_text(json.dumps(data, indent=2), encoding="utf-8")
     if log:
         log.user(f"Active voice set to {profile_name}/{candidate}")
     return data
