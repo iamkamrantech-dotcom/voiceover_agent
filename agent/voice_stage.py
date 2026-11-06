@@ -54,6 +54,35 @@ class Take:
     transcript: str = ""
     words: list[WordTiming] = field(default_factory=list)
 
+    def record(self, chosen: bool = False) -> dict:
+        """The durable form. Every take is kept, not just the winner, so the
+        dashboard can offer them and a later revision can switch between
+        them without generating anything."""
+        return {
+            "seed": self.seed,
+            "wav": str(self.path),
+            "duration": round(self.duration, 3),
+            "similarity": self.similarity,
+            "words_ok": self.words_ok,
+            "transcript": self.transcript,
+            "words": [asdict(w) for w in self.words],
+            "chosen": chosen,
+        }
+
+
+def take_from_record(data: dict) -> Take:
+    """Rebuild a Take from voice_stage.json, so a revision can re-pick a
+    take without re-synthesising or re-scoring it."""
+    return Take(
+        seed=int(data["seed"]),
+        path=Path(data["wav"]),
+        duration=float(data.get("duration") or 0.0),
+        similarity=data.get("similarity"),
+        words_ok=bool(data.get("words_ok")),
+        transcript=data.get("transcript") or "",
+        words=[WordTiming(**w) for w in data.get("words", [])],
+    )
+
 
 @dataclass
 class BlockAudio:
@@ -76,6 +105,10 @@ class BlockAudio:
     # at 5.0s. On a short block the number is noise, so it is reported but
     # never compared against MIN_SIMILARITY.
     similarity_reliable: bool = True
+    # Every take this block produced, scored, in generation order. The chosen
+    # one is flagged. Without this the losing takes are unrecoverable once the
+    # run ends, and "choose a different take" has nothing to choose from.
+    takes: list[dict] = field(default_factory=list)
 
     @property
     def scene_duration(self) -> float:
@@ -94,17 +127,25 @@ class BlockAudio:
 
 
 def _cache_key(cfg: Config, text: str, seed: int, engine: str) -> str:
+    # Everything that changes the audio must be in here. tts_trim_top_db and
+    # voice_converter were missing, which did not matter while .env was edited
+    # by hand - it does now that the dashboard can change them, and the
+    # symptom would be the worst kind: silently reusing stale audio.
     parts = [
         text.strip(), engine, str(cfg.voice_sample),
         f"{cfg.tts_exaggeration}", f"{cfg.tts_cfg_weight}",
         f"{cfg.tts_temperature}", f"{cfg.tts_max_chunk_chars}",
-        f"{cfg.tts_pause_sentence}", f"{cfg.tts_pause_comma}", str(seed),
+        f"{cfg.tts_pause_sentence}", f"{cfg.tts_pause_comma}",
+        f"{cfg.tts_trim_top_db}", str(cfg.voice_converter), str(seed),
     ]
     return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:20]
 
 
-def _take_path(cfg: Config, text: str, seed: int, engine: str) -> Path:
+def take_path(cfg: Config, text: str, seed: int, engine: str) -> Path:
     return cfg.tts_cache_dir / f"{_cache_key(cfg, text, seed, engine)}.wav"
+
+
+_take_path = take_path  # internal name kept for readability below
 
 
 # --------------------------------------------------------------------------
@@ -118,8 +159,18 @@ def _generate_round(blocks_todo: list[tuple[Block, list[int]]], cfg: Config,
         return takes
 
     _check(cancel)
-    synth = make_synthesizer(cfg, engine, log=log)
-    synth.load()
+
+    # Loading Chatterbox costs ~70s and most of this machine's RAM. When every
+    # take asked for is already in the cache - a resume, or a revision that
+    # only re-picks a take - there is nothing to synthesise, so do not load it.
+    missing = any(not _take_path(cfg, block.text, seed, engine).is_file()
+                  for block, seeds in blocks_todo for seed in seeds)
+
+    synth = make_synthesizer(cfg, engine, log=log) if missing else None
+    if synth is not None:
+        synth.load()
+    else:
+        log.debug("every take is cached; the synthesizer is not loaded")
     try:
         for position, (block, seeds) in enumerate(blocks_todo):
             made: list[Take] = []
@@ -143,13 +194,15 @@ def _generate_round(blocks_todo: list[tuple[Block, list[int]]], cfg: Config,
 
                 log.user(f"{human}: generating narration "
                          f"(take {i + 1}/{len(seeds)})")
+                assert synth is not None  # a miss means `missing` was True
                 result = synth.synthesize(block.text, path, seed=seed)
                 made.append(Take(seed, result.path, result.duration))
             takes[block.index] = made
     finally:
         # Always free the model, cancelled or not - this machine cannot
         # afford a leaked Chatterbox.
-        synth.free()
+        if synth is not None:
+            synth.free()
     return takes
 
 
@@ -184,6 +237,86 @@ def _pick(takes: list[Take]) -> tuple[Take | None, int]:
         return None, 0
     best = max(valid, key=lambda t: (t.similarity if t.similarity is not None else 0.0))
     return best, takes.index(best) + 1
+
+
+def assemble_block(block: Block, block_takes: list[Take], cfg: Config, log,
+                   converter=None, chosen: Take | None = None) -> BlockAudio:
+    """Turn one block's takes into the BlockAudio the rest of the pipeline
+    uses. The first run and every later revision both come through here, so
+    a revised block can never be built differently from an original one.
+
+    `chosen` overrides the automatic pick - that is what "use this take
+    instead" means, and it is the only difference between the two paths.
+    """
+    if block.is_silent:
+        return BlockAudio(
+            block_index=block.index, text="", scene_ids=block.scene_ids,
+            scene_start=block.start, scene_end=block.end, wav=None,
+            duration=0.0, similarity=None, words_ok=True, transcript="",
+            words=[], seed=None, take_number=0, takes_tried=0, silent=True,
+        )
+
+    if chosen is not None and chosen in block_takes:
+        best: Take | None = chosen
+        take_number = block_takes.index(chosen) + 1
+    else:
+        best, take_number = _pick(block_takes)
+        if best is None and block_takes:
+            # Nothing passed the word check. Keep the closest-sounding take
+            # rather than dropping the block, and flag it loudly.
+            best = max(block_takes,
+                       key=lambda t: (t.similarity if t.similarity is not None else 0.0))
+            take_number = block_takes.index(best) + 1
+            log.warning(
+                f"Block {block.index + 1}: no take had the right words, "
+                f"keeping the closest one. Listen to it yourself."
+            )
+
+    if best is None:
+        log.error(f"Block {block.index + 1}: no take was produced.")
+        return BlockAudio(
+            block_index=block.index, text=block.text,
+            scene_ids=block.scene_ids, scene_start=block.start,
+            scene_end=block.end, wav=None, duration=0.0, similarity=None,
+            words_ok=False, transcript="", words=[], seed=None,
+            take_number=0, takes_tried=len(block_takes),
+            takes=[t.record() for t in block_takes],
+        )
+
+    if converter is not None:
+        converted = cfg.tts_cache_dir / f"{best.path.stem}_conv.wav"
+        best.path = converter.convert(best.path, converted)
+
+    reliable = best.duration >= cfg.min_similarity_seconds
+    if not reliable and best.similarity is not None:
+        log.debug("block %d is %.2fs: similarity %.1f%% not reliable",
+                  block.index, best.duration, best.similarity)
+
+    return BlockAudio(
+        block_index=block.index, text=block.text,
+        scene_ids=block.scene_ids, scene_start=block.start,
+        scene_end=block.end, wav=best.path, duration=best.duration,
+        similarity=best.similarity, words_ok=best.words_ok,
+        transcript=best.transcript, words=best.words, seed=best.seed,
+        take_number=take_number, takes_tried=len(block_takes),
+        similarity_reliable=reliable,
+        takes=[t.record(chosen=t is best) for t in block_takes],
+    )
+
+
+def takes_for_block(block: Block, seeds: list[int], cfg: Config, engine: str,
+                    log, progress=None, cancel=None) -> list[Take]:
+    """Generate and score a given set of seeds for ONE block.
+
+    Used by a revision. Same two passes as a full run and the same
+    load/free discipline, just over a single block - which is the whole
+    point: one bad block should cost one block's worth of CPU.
+    """
+    made = _generate_round([(block, seeds)], cfg, engine, log, 1,
+                           progress=progress, cancel=cancel)
+    _check(cancel)
+    _verify_round(made, {block.index: block}, cfg, engine, log)
+    return made.get(block.index, [])
 
 
 def run_voice_stage(blocks: list[Block], cfg: Config | None = None,
@@ -239,59 +372,8 @@ def run_voice_stage(blocks: list[Block], cfg: Config | None = None,
         _verify_round(takes, by_index, cfg, engine, log)
 
     # ---- assemble --------------------------------------------------------
-    out: list[BlockAudio] = []
-    for block in blocks:
-        if block.is_silent:
-            out.append(BlockAudio(
-                block_index=block.index, text="", scene_ids=block.scene_ids,
-                scene_start=block.start, scene_end=block.end, wav=None,
-                duration=0.0, similarity=None, words_ok=True, transcript="",
-                words=[], seed=None, take_number=0, takes_tried=0, silent=True,
-            ))
-            continue
-
-        block_takes = takes.get(block.index, [])
-        best, take_number = _pick(block_takes)
-        if best is None and block_takes:
-            # Nothing passed the word check. Keep the closest-sounding take
-            # rather than dropping the block, and flag it loudly.
-            best = max(block_takes,
-                       key=lambda t: (t.similarity if t.similarity is not None else 0.0))
-            take_number = block_takes.index(best) + 1
-            log.warning(
-                f"Block {block.index + 1}: no take had the right words, "
-                f"keeping the closest one. Listen to it yourself."
-            )
-
-        if best is None:
-            log.error(f"Block {block.index + 1}: no take was produced.")
-            out.append(BlockAudio(
-                block_index=block.index, text=block.text,
-                scene_ids=block.scene_ids, scene_start=block.start,
-                scene_end=block.end, wav=None, duration=0.0, similarity=None,
-                words_ok=False, transcript="", words=[], seed=None,
-                take_number=0, takes_tried=len(block_takes),
-            ))
-            continue
-
-        if converter is not None:
-            converted = cfg.tts_cache_dir / f"{best.path.stem}_conv.wav"
-            best.path = converter.convert(best.path, converted)
-
-        reliable = best.duration >= cfg.min_similarity_seconds
-        if not reliable and best.similarity is not None:
-            log.debug("block %d is %.2fs: similarity %.1f%% not reliable",
-                      block.index, best.duration, best.similarity)
-
-        out.append(BlockAudio(
-            block_index=block.index, text=block.text,
-            scene_ids=block.scene_ids, scene_start=block.start,
-            scene_end=block.end, wav=best.path, duration=best.duration,
-            similarity=best.similarity, words_ok=best.words_ok,
-            transcript=best.transcript, words=best.words, seed=best.seed,
-            take_number=take_number, takes_tried=len(block_takes),
-            similarity_reliable=reliable,
-        ))
+    out = [assemble_block(block, takes.get(block.index, []), cfg, log,
+                          converter=converter) for block in blocks]
 
     if converter is not None:
         converter.free()

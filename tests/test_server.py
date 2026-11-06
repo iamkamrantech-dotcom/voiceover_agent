@@ -22,6 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from fastapi.testclient import TestClient  # noqa: E402
 
 from agent import log as agent_log          # noqa: E402
+from agent import voice_profiles            # noqa: E402
 from agent.config import Config             # noqa: E402
 from agent.jobs import JobManager           # noqa: E402
 
@@ -270,6 +271,105 @@ def main() -> int:
     page = client.get("/")
     r.add("page loads", "200 + html", f"{page.status_code}",
           page.status_code == 200 and "Voiceover Agent" in page.text)
+
+    # ---- 9. settings: grouped, with defaults and reset -------------------
+    settings = client.get("/api/settings").json()
+    groups = settings.get("groups", [])
+    r.add("settings grouped", "5 sections", f"{len(groups)} sections",
+          len(groups) == 5)
+    every = [s for g in groups for s in g["settings"]]
+    described = [s for s in every if s["help"] and s["label"]]
+    r.add("settings explained", "all have help",
+          f"{len(described)}/{len(every)}", len(described) == len(every))
+    with_default = sum(1 for s in every if s["default"] is not None)
+    r.add("settings carry defaults", "all have one",
+          f"{with_default}/{len(every)}", with_default == len(every))
+
+    saved = client.put("/api/settings", json={"values": {"NARRATION_WPS": 3.1}})
+    r.add("setting saved", "200", str(saved.status_code),
+          saved.status_code == 200)
+    wps = next(s for s in
+               [x for g in saved.json()["groups"] for x in g["settings"]]
+               if s["key"] == "NARRATION_WPS")
+    r.add("changed value marked", "differs from default",
+          f"{wps['value']} vs {wps['default']}",
+          wps["differs"] and abs(float(wps["value"]) - 3.1) < 1e-6)
+
+    reset = client.put("/api/settings", json={"reset": ["NARRATION_WPS"]})
+    wps = next(s for s in
+               [x for g in reset.json()["groups"] for x in g["settings"]]
+               if s["key"] == "NARRATION_WPS")
+    r.add("setting reset to default", "2.5", str(wps["value"]),
+          not wps["differs"] and abs(float(wps["value"]) - 2.5) < 1e-6)
+
+    bad = client.put("/api/settings", json={"values": {"MAX_SPEEDUP": 9.0}})
+    r.add("out-of-range refused", "400 + reason", str(bad.status_code),
+          bad.status_code == 400 and "above" in bad.json()["detail"])
+
+    bad = client.put("/api/settings", json={"values": {"OUTPUT_DIR": "/tmp"}})
+    r.add("fixed setting refused", "400", str(bad.status_code),
+          bad.status_code == 400)
+
+    password = next(s for s in every if s["key"] == "APP_PASSWORD")
+    r.add("password never returned", "a yes/no only", str(password["value"]),
+          isinstance(password["value"], bool))
+
+    # ---- 10. the pipeline's stage list and the job log -------------------
+    config = client.get("/api/config").json()
+    r.add("stage list served", "8+ stages", f"{len(config.get('stages', []))}",
+          len(config.get("stages", [])) >= 8)
+
+    job_log = client.get(f"/api/jobs/{job_id}/log").json()
+    r.add("job log readable", "lines recorded",
+          f"{len(job_log.get('lines', []))} lines",
+          len(job_log.get("lines", [])) > 0)
+    levels = {line["level"] for line in job_log.get("lines", [])}
+    r.add("log lines are levelled", "known levels", ", ".join(sorted(levels))[:28],
+          levels and levels <= {"debug", "progress", "warning", "error"})
+
+    # ---- 11. voice profiles: rename and the active-profile guard ---------
+    voices = PROJECT_ROOT / "voices"
+    made = voices / "test_profile_tmp"
+    made.mkdir(parents=True, exist_ok=True)
+    (made / "ref_1.wav").write_bytes(b"RIFF0000WAVE")
+    (made / "profile.json").write_text(json.dumps({
+        "name": "test_profile_tmp", "created": "2026-01-01T00:00:00",
+        "source": str(made / "source.wav"),
+        "candidates": [{"name": "ref_1.wav", "path": str(made / "ref_1.wav"),
+                        "start": 0.0, "end": 10.0, "score": 1.0,
+                        "similarity": None, "sample": None}],
+        "best": "ref_1.wav",
+    }), encoding="utf-8")
+
+    renamed = client.patch("/api/voice/test_profile_tmp",
+                           json={"name": "test profile renamed"})
+    r.add("voice renamed", "200", str(renamed.status_code),
+          renamed.status_code == 200)
+    moved = voices / "test profile renamed"
+    inner = json.loads((moved / "profile.json").read_text(encoding="utf-8")) \
+        if moved.is_dir() else {}
+    r.add("rename rewrites paths", "points at the new folder",
+          Path(inner.get("candidates", [{}])[0].get("path", "")).parent.name[:28],
+          moved.is_dir()
+          and Path(inner["candidates"][0]["path"]).parent == moved)
+
+    bad = client.patch("/api/voice/test profile renamed", json={"name": "a/b"})
+    r.add("bad name refused", "400", str(bad.status_code), bad.status_code == 400)
+
+    active_before = voice_profiles.active_info()
+    voice_profiles.set_active("test profile renamed", "ref_1.wav")
+    guard = client.delete("/api/voice/test profile renamed")
+    r.add("active voice not deletable", "400 + reason", str(guard.status_code),
+          guard.status_code == 400 and "in use" in guard.json()["detail"])
+
+    if active_before:
+        voice_profiles.set_active(active_before["profile"],
+                                  active_before["candidate"])
+    else:
+        voice_profiles.ACTIVE_FILE.unlink(missing_ok=True)
+    removed = client.delete("/api/voice/test profile renamed")
+    r.add("voice deleted", "200 + folder gone", str(removed.status_code),
+          removed.status_code == 200 and not moved.exists())
 
     server.manager.shutdown(wait=3)
 

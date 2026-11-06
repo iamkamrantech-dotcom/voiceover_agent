@@ -32,13 +32,23 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from agent import log as agent_log  # noqa: E402
+from agent import settings_schema  # noqa: E402
+from agent import versions  # noqa: E402
 from agent import voice_profiles  # noqa: E402
 from agent.config import Config  # noqa: E402
-from agent.jobs import JobManager, estimate_seconds  # noqa: E402
+from agent.jobs import STAGE_LABELS, JobManager, estimate_seconds  # noqa: E402
 from agent.pipeline import check_script, fit_row, script_check_table  # noqa: E402
+from agent.revise import (  # noqa: E402
+    BlockChange, ReviseError, load_blocks, plan_revision,
+)
 from agent.scenes import detect_scenes  # noqa: E402
 from agent.script_parser import parse_script  # noqa: E402
 from agent.stats import collect_stats, machine_info  # noqa: E402
+from agent.subtitles import parse_srt  # noqa: E402
+from agent.voice_profiles import ProfileError  # noqa: E402
+from agent.waveform import peaks_for  # noqa: E402
+
+LOG_LEVELS = ("debug", "progress", "warning", "error")
 
 WEB = PROJECT_ROOT / "web"
 DIST = WEB / "dist"
@@ -55,13 +65,10 @@ manager.start()
 app = FastAPI(title="Voiceover Agent")
 _sessions: set[str] = set()
 
-# Settings the dashboard is allowed to write back to .env. Anything that
-# could break a running job or point the app at missing files stays out.
-WRITABLE_SETTINGS = {
-    "TTS_ENGINE": str, "TTS_BEST_OF_N": int, "TTS_BEST_OF_N_DRAFT": int,
-    "MUSIC_DB": float, "HOLD_MOTION": str, "MIN_SIMILARITY": float,
-    "NARRATION_WPS": float, "PREVIEW_SUBTITLES": bool,
-}
+# What may be written back to .env, and what each setting means, lives in
+# agent/settings_schema.py - one table rather than a list of keys here and
+# their explanations in the front end.
+WRITABLE_SETTINGS = settings_schema.WRITABLE
 
 
 # --------------------------------------------------------------------------
@@ -393,6 +400,7 @@ async def create_job(request: Request) -> dict:
 
     draft = bool(body.get("draft", True))
     params = {
+        "kind": "video",
         "video": str(video_path),
         "script": str(script_path),
         "music": body.get("music") or None,
@@ -454,32 +462,246 @@ def delete_job(job_id: str) -> dict:
     return {"ok": True}
 
 
+def _job_folder(job_id: str) -> Path:
+    if manager.read(job_id) is None:
+        raise HTTPException(404, "Job not found.")
+    return manager.job_dir(job_id)
+
+
 @app.get("/api/jobs/{job_id}/timeline", dependencies=[Depends(require_login)])
-def job_timeline(job_id: str) -> dict:
-    path = manager.job_dir(job_id) / "timeline.json"
+def job_timeline(job_id: str, v: int | None = None) -> dict:
+    folder = _job_folder(job_id)
+    path = versions.file_for(folder, "timeline", v) or folder / "timeline.json"
     if not path.is_file():
         raise HTTPException(404, "The timeline is not ready yet.")
-    return json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    # Subtitle cues belong on the timeline, and the SRT is already written.
+    # Parsing it here reuses the pipeline's own parser instead of writing a
+    # second SRT reader in TypeScript that could disagree with it.
+    cues = versions.file_for(folder, "subtitles", v)
+    data["cues"] = []
+    if cues is not None:
+        try:
+            data["cues"] = [{"index": c.index, "start": c.start,
+                             "end": c.end, "text": c.text}
+                            for c in parse_srt(cues)]
+        except Exception as exc:
+            log.debug("subtitles could not be parsed for %s: %s", job_id, exc)
+    return data
 
 
 @app.get("/api/jobs/{job_id}/file/{kind}", dependencies=[Depends(require_login)])
-def job_file(job_id: str, kind: str):
+def job_file(job_id: str, kind: str, v: int | None = None):
     status = manager.read(job_id)
     if status is None:
         raise HTTPException(404, "Job not found.")
     folder = manager.job_dir(job_id)
-    choices = {
-        "video": folder / "final.mp4",
-        "subtitles": Path(status.result.get("subtitles") or ""),
-        "report": Path(status.result.get("report") or ""),
-        "timeline": folder / "timeline.json",
-    }
-    path = choices.get(kind)
+
+    path = versions.file_for(folder, kind, v)
+    if path is None and v is None:
+        # A job from before versions existed, or one still being written.
+        legacy = {
+            "video": folder / "final.mp4",
+            "subtitles": Path(status.result.get("subtitles") or ""),
+            "report": Path(status.result.get("report") or ""),
+            "timeline": folder / "timeline.json",
+        }.get(kind)
+        path = legacy if legacy and legacy.is_file() else None
     if path is None or not path.is_file():
         raise HTTPException(404, "File not found.")
+
+    # FileResponse gives byte-range requests for free, which is what lets the
+    # player seek. Streaming it by hand would take that away.
     media = "video/mp4" if kind == "video" else "application/octet-stream"
     return FileResponse(path, media_type=media,
                         filename=None if kind == "video" else path.name)
+
+
+@app.get("/api/jobs/{job_id}/versions", dependencies=[Depends(require_login)])
+def job_versions(job_id: str) -> dict:
+    folder = _job_folder(job_id)
+    return {"versions": [v.to_dict() for v in versions.list_versions(folder)]}
+
+
+@app.delete("/api/jobs/{job_id}/versions/{number}",
+            dependencies=[Depends(require_login)])
+def delete_version(job_id: str, number: int) -> dict:
+    folder = _job_folder(job_id)
+    ok, message = versions.delete(folder, number)
+    if not ok:
+        raise HTTPException(400, message)
+    return {"ok": True, "message": message}
+
+
+@app.get("/api/jobs/{job_id}/waveform", dependencies=[Depends(require_login)])
+def job_waveform(job_id: str, v: int | None = None) -> dict:
+    folder = _job_folder(job_id)
+    existing = versions.file_for(folder, "waveform", v)
+    if existing is not None:
+        return json.loads(existing.read_text(encoding="utf-8"))
+
+    # Jobs made before 8B have no peak file. The mastered narration is still
+    # there, so measure it once now rather than show no waveform at all.
+    master = folder / "narration_master.wav"
+    if not master.is_file():
+        raise HTTPException(404, "There is no audio to draw yet.")
+    try:
+        return peaks_for(master, folder / "waveform.json")
+    except Exception as exc:
+        log.debug("waveform failed for %s: %s", job_id, exc)
+        raise HTTPException(500, "The waveform could not be measured.")
+
+
+@app.get("/api/jobs/{job_id}/keyframe/{scene}",
+         dependencies=[Depends(require_login)])
+def job_keyframe(job_id: str, scene: int):
+    folder = _job_folder(job_id)
+    path = folder / "keyframes" / f"scene_{scene:03d}.jpg"
+    if not path.is_file():
+        raise HTTPException(404, "No keyframe for that scene.")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.get("/api/jobs/{job_id}/log", dependencies=[Depends(require_login)])
+def job_log(job_id: str) -> dict:
+    """The whole log, for a console opened after the fact and for Copy.
+
+    While a job runs the lines also arrive live on the event stream; this is
+    the same content, read back from the file the handler wrote.
+    """
+    folder = _job_folder(job_id)
+    path = folder / "job.log"
+    lines: list[dict] = []
+    if path.is_file():
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = raw.split(None, 2)
+            if len(parts) == 3 and parts[1] in LOG_LEVELS:
+                lines.append({"t": parts[0], "level": parts[1], "text": parts[2]})
+            elif raw.strip():
+                lines.append({"t": "", "level": "debug", "text": raw})
+    return {"lines": lines[-4000:], "live": manager.log_tail(job_id)}
+
+
+@app.get("/api/jobs/{job_id}/qc", dependencies=[Depends(require_login)])
+def job_qc(job_id: str, v: int | None = None) -> dict:
+    folder = _job_folder(job_id)
+    path = versions.file_for(folder, "report", v)
+    if path is None or not path.is_file():
+        raise HTTPException(404, "There is no quality report yet.")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------
+# per-block review
+# --------------------------------------------------------------------------
+
+@app.get("/api/jobs/{job_id}/blocks", dependencies=[Depends(require_login)])
+def job_blocks(job_id: str) -> dict:
+    """Every block with every take it produced.
+
+    Jobs made before takes were recorded report only their chosen one -
+    said plainly rather than shown as an empty list.
+    """
+    folder = _job_folder(job_id)
+    try:
+        blocks = load_blocks(folder)
+    except ReviseError as exc:
+        raise HTTPException(404, str(exc))
+
+    complete = all(b.silent or b.takes for b in blocks)
+    out = []
+    for block in blocks:
+        takes = [dict(t, wav=None) for t in block.takes]  # paths stay server-side
+        for i, take in enumerate(takes, start=1):
+            take["number"] = i
+            take["playable"] = bool(block.takes[i - 1].get("wav")) and \
+                Path(block.takes[i - 1]["wav"]).is_file()
+            take.pop("words", None)                        # large, and unused here
+        out.append({
+            "block": block.block_index,
+            "text": block.text,
+            "scene_ids": block.scene_ids,
+            "start": block.scene_start,
+            "end": block.scene_end,
+            "silent": block.silent,
+            "duration": block.duration,
+            "similarity": block.similarity,
+            "similarity_reliable": block.similarity_reliable,
+            "words_ok": block.words_ok,
+            "transcript": block.transcript,
+            "seed": block.seed,
+            "take_number": block.take_number,
+            "takes": takes,
+        })
+    return {"blocks": out, "takes_recorded": complete}
+
+
+@app.get("/api/jobs/{job_id}/take", dependencies=[Depends(require_login)])
+def job_take(job_id: str, block: int, seed: int):
+    """Play one take.
+
+    Only files this job's own record names are served. The TTS cache is a
+    flat shared folder, and it is not an open file server.
+    """
+    folder = _job_folder(job_id)
+    try:
+        blocks = load_blocks(folder)
+    except ReviseError as exc:
+        raise HTTPException(404, str(exc))
+
+    found = next((b for b in blocks if b.block_index == block), None)
+    if found is None:
+        raise HTTPException(404, "No such block.")
+    take = next((t for t in found.takes if t.get("seed") == seed), None)
+    if take is None or not take.get("wav"):
+        raise HTTPException(404, "No such take.")
+    path = Path(take["wav"])
+    if not path.is_file():
+        raise HTTPException(404, "That take's audio is no longer on disk.")
+    return FileResponse(path, media_type="audio/wav")
+
+
+@app.get("/api/jobs/{job_id}/block-audio", dependencies=[Depends(require_login)])
+def job_block_audio(job_id: str, block: int, v: int | None = None):
+    """The block as it is in the video - after any tightening or speed-up.
+
+    Different from the raw take, and worth hearing: it is what the viewer
+    gets.
+    """
+    folder = _job_folder(job_id)
+    out_dir = versions.version_dir(folder, (versions.find(folder, v) or
+                                            versions.Version(1)).version)
+    for candidate in (out_dir / "blocks", folder / "blocks"):
+        for suffix in (".wav", ".flac"):
+            path = candidate / f"block{block:03d}{suffix}"
+            if path.is_file():
+                return FileResponse(path, media_type="audio/wav")
+    raise HTTPException(404, "That block's audio was not kept.")
+
+
+@app.post("/api/jobs/{job_id}/revise/plan", dependencies=[Depends(require_login)])
+async def revise_plan(job_id: str, request: Request) -> dict:
+    folder = _job_folder(job_id)
+    try:
+        change = BlockChange.from_dict(await _body(request))
+        plan = plan_revision(folder, change, cfg, speed=manager.speed,
+                             engine=(manager.read(job_id).params.get("engine")))
+    except ReviseError as exc:
+        raise HTTPException(400, str(exc))
+    return plan.to_dict()
+
+
+@app.post("/api/jobs/{job_id}/revise", dependencies=[Depends(require_login)])
+async def revise(job_id: str, request: Request) -> dict:
+    folder = _job_folder(job_id)
+    try:
+        change = BlockChange.from_dict(await _body(request))
+        plan_revision(folder, change, cfg)        # refuse early, with a reason
+        manager.submit_revision(job_id, change)
+    except ReviseError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "id": job_id}
 
 
 # --------------------------------------------------------------------------
@@ -493,6 +715,7 @@ async def _event_stream(request: Request, job_id: str | None):
         if job_id:
             status = manager.read(job_id)
             first["job"] = status.to_dict() if status else None
+            first["log"] = manager.log_tail(job_id)
         yield f"data: {json.dumps(first)}\n\n"
 
         while True:
@@ -506,7 +729,13 @@ async def _event_stream(request: Request, job_id: str | None):
                 yield ": keepalive\n\n"
                 await asyncio.sleep(0)
                 continue
-            if job_id and payload.get("job", {}).get("id") != job_id:
+
+            if payload.get("type") == "log":
+                # Log lines only go to the stream watching that job. The
+                # general stream drives the top bar and has no console.
+                if not job_id or payload.get("job_id") != job_id:
+                    continue
+            elif job_id and (payload.get("job") or {}).get("id") != job_id:
                 # Still send queue counts so the top bar stays right.
                 payload = {"type": "snapshot", **manager.snapshot()}
             yield f"data: {json.dumps(payload)}\n\n"
@@ -577,18 +806,24 @@ def voice_audio(path: str):
 async def voice_prepare(recording: UploadFile = File(...),
                         name: str = Form(""),
                         engine: str = Form("")) -> dict:
+    """Queue the preparation rather than doing it in this request.
+
+    Preparing a voice loads Chatterbox and then ECAPA, exactly as a job
+    does. Running it here would put a second model in memory beside a
+    running job - the one thing this machine cannot do. It also takes
+    minutes, which is not a thing to hold an HTTP request open for.
+    """
     folder = UPLOADS / f"voice_{secrets.token_hex(4)}"
     saved = _save_upload(recording, folder,
                          Path(recording.filename or "voice.wav").name)
-    try:
-        profile = voice_profiles.prepare_profile(
-            saved, cfg, name=name or None, engine=engine or cfg.tts_engine,
-            log=log)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    finally:
-        shutil.rmtree(folder, ignore_errors=True)
-    return profile.to_dict()
+    label = name or f"voice_{secrets.token_hex(3)}"
+    job_id = manager.submit(label, {
+        "kind": "voice",
+        "recording": str(saved),
+        "name": name or "",
+        "engine": (engine or cfg.tts_engine).lower(),
+    })
+    return {"id": job_id, "name": label}
 
 
 @app.post("/api/voice/activate", dependencies=[Depends(require_login)])
@@ -598,75 +833,131 @@ def voice_activate(profile: str = Form(...),
         data = voice_profiles.set_active(profile, candidate, log=log)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
-    global cfg
-    cfg = Config.load()  # pick the new reference up immediately
-    manager.cfg = cfg
+    _reload_config()
     return data
+
+
+@app.patch("/api/voice/{profile}", dependencies=[Depends(require_login)])
+async def voice_rename(profile: str, request: Request) -> dict:
+    body = await _body(request)
+    try:
+        renamed = voice_profiles.rename_profile(
+            profile, str(body.get("name") or ""), log=log)
+    except ProfileError as exc:
+        raise HTTPException(400, str(exc))
+    _reload_config()
+    return renamed.to_dict()
+
+
+@app.delete("/api/voice/{profile}", dependencies=[Depends(require_login)])
+def voice_delete(profile: str) -> dict:
+    try:
+        voice_profiles.delete_profile(profile, log=log)
+    except ProfileError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True}
 
 
 # --------------------------------------------------------------------------
 # settings
 # --------------------------------------------------------------------------
 
+def _busy_reason() -> str:
+    """Why settings are locked, or empty when they are not.
+
+    A job reads its settings as it goes, so changing them underneath one
+    would produce a video made half one way and half another.
+    """
+    snapshot = manager.snapshot()
+    if snapshot["running"]:
+        return ("A job is running. Settings are locked until it finishes, so "
+                "it is not built with two different sets of rules.")
+    if snapshot["queued"]:
+        return ("Jobs are waiting in the queue. Settings unlock once the "
+                "queue is empty.")
+    return ""
+
+
 @app.get("/api/settings", dependencies=[Depends(require_login)])
 def get_settings() -> dict:
-    return {
-        "writable": {
-            "TTS_ENGINE": cfg.tts_engine,
-            "TTS_BEST_OF_N": cfg.tts_best_of_n,
-            "TTS_BEST_OF_N_DRAFT": cfg.tts_best_of_n_draft,
-            "MUSIC_DB": cfg.music_db,
-            "HOLD_MOTION": cfg.hold_motion,
-            "MIN_SIMILARITY": cfg.min_similarity,
-            "NARRATION_WPS": cfg.narration_wps,
-            "PREVIEW_SUBTITLES": cfg.preview_subtitles,
-        },
-        "readonly": {
-            "voice_sample": str(cfg.voice_sample),
-            "voice_target": str(cfg.voice_target),
-            "device": cfg.device,
-            "whisper_model": cfg.whisper_model,
-            "target_lufs": cfg.target_lufs,
-            "max_speedup": cfg.max_speedup,
-            "max_video_slowdown": cfg.max_video_slowdown,
-            "min_scene_seconds": cfg.min_scene_seconds,
-            "max_upload_mb": cfg.max_upload_mb,
-            "output_dir": str(cfg.output_dir),
-        },
-    }
+    reason = _busy_reason()
+    return settings_schema.describe(cfg, locked=bool(reason),
+                                    locked_reason=reason)
 
 
-@app.put("/api/settings", dependencies=[Depends(require_login)])
-async def put_settings(request: Request) -> dict:
-    body = await request.json()
+def _write_env(changes: dict[str, str], remove: list[str]) -> None:
+    """Apply changes to .env.
+
+    A reset DELETES the line rather than writing today's default into it, so
+    the setting goes on tracking the default if that default later changes.
+    """
+    import os
+
     env_path = PROJECT_ROOT / ".env"
     lines = env_path.read_text(encoding="utf-8").splitlines() \
         if env_path.is_file() else []
 
-    for key, raw in body.items():
-        if key not in WRITABLE_SETTINGS:
-            raise HTTPException(400, f"{key} cannot be changed here.")
-        kind = WRITABLE_SETTINGS[key]
-        try:
-            value = ("true" if bool(raw) else "false") if kind is bool \
-                else str(kind(raw))
-        except (TypeError, ValueError):
-            raise HTTPException(400, f"{key} has an invalid value.")
+    kept = []
+    for line in lines:
+        key = line.split("=", 1)[0].strip()
+        if key in remove:
+            os.environ.pop(key, None)
+            continue
+        if key in changes:
+            kept.append(f"{key}={changes.pop(key)}")
+            continue
+        kept.append(line)
+    for key, value in changes.items():
+        kept.append(f"{key}={value}")
 
-        for i, line in enumerate(lines):
-            if line.split("=", 1)[0].strip() == key:
-                lines[i] = f"{key}={value}"
-                break
-        else:
-            lines.append(f"{key}={value}")
-        import os
+    env_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
 
-        os.environ[key] = value
 
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def _reload_config() -> None:
     global cfg
     cfg = Config.load()
     manager.cfg = cfg
+
+
+@app.put("/api/settings", dependencies=[Depends(require_login)])
+async def put_settings(request: Request) -> dict:
+    body = await _body(request)
+    values = body.get("values") if isinstance(body.get("values"), dict) else {}
+    resets = [str(k) for k in (body.get("reset") or [])]
+    if not values and not resets:
+        # The old shape: a flat map of key -> value.
+        values = {k: v for k, v in body.items() if k not in ("values", "reset")}
+
+    reason = _busy_reason()
+    if reason:
+        raise HTTPException(409, reason)
+
+    changes: dict[str, str] = {}
+    import os
+
+    for key, raw in values.items():
+        setting = settings_schema.WRITABLE.get(key)
+        if setting is None:
+            raise HTTPException(400, f"{key} cannot be changed here.")
+        try:
+            value = settings_schema.coerce(setting, raw)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        changes[key] = value
+        os.environ[key] = value
+
+    for key in resets:
+        if key not in settings_schema.WRITABLE:
+            raise HTTPException(400, f"{key} cannot be changed here.")
+
+    _write_env(changes, resets)
+    _reload_config()
+
+    # The password gate is evaluated per request against cfg, so clearing it
+    # must also drop the sessions it was protecting.
+    if "APP_PASSWORD" in changes or "APP_PASSWORD" in resets:
+        _sessions.clear()
+
     return get_settings()
 
 
@@ -679,6 +970,10 @@ def config_view() -> dict:
         "voice_sample": str(cfg.voice_sample),
         "max_upload_mb": cfg.max_upload_mb,
         "device": cfg.device,
+        # The pipeline's own stage list, in order, so the dashboard's
+        # stepper is not a second copy that can fall out of step with it.
+        "stages": [{"key": key, "label": label}
+                   for key, label in STAGE_LABELS.items()],
     }
 
 

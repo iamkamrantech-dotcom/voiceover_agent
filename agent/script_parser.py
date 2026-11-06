@@ -18,9 +18,10 @@ there is nothing before them to continue.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -80,6 +81,33 @@ class ScriptSplit:
     @property
     def spoken_blocks(self) -> list[Block]:
         return [b for b in self.blocks if not b.is_silent]
+
+    def to_dict(self) -> dict:
+        return {
+            "method": self.method,
+            "warnings": list(self.warnings),
+            "blocks": [asdict(b) for b in self.blocks],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ScriptSplit":
+        return cls(
+            method=data.get("method", ""),
+            blocks=[Block(**b) for b in data.get("blocks", [])],
+            warnings=list(data.get("warnings", [])),
+        )
+
+    def save(self, path: Path) -> None:
+        """Kept with the job so a revision knows how the script was divided
+        without parsing it again - and so the dashboard can show the split
+        that was actually used, not one re-derived later."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: Path) -> "ScriptSplit":
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 # --------------------------------------------------------------------------

@@ -17,12 +17,14 @@ cache and never made again.
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import sys
 import threading
 import time
 import traceback
 import uuid
+from collections import deque
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -32,8 +34,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agent import log as agent_log  # noqa: E402
+from agent import versions  # noqa: E402
 from agent.config import Config  # noqa: E402
 from agent.pipeline import run_job  # noqa: E402
+from agent.revise import BlockChange, ReviseError, run_revision  # noqa: E402
 from agent.voice_stage import JobCancelled  # noqa: E402
 
 QUEUED = "queued"
@@ -61,6 +65,91 @@ DEFAULT_SECONDS_PER_WORD = {"standard": 5.5, "turbo": 1.6, "mock": 0.01}
 MODEL_LOAD_SECONDS = {"standard": 70.0, "turbo": 70.0, "mock": 0.0}
 
 
+# How many lines of a running job's log are held in memory for a console
+# that opens mid-run. The whole log is on disk; this is only the catch-up.
+LOG_TAIL = 500
+
+
+def _mark_open_stage(stages: list[dict], state: str) -> list[dict]:
+    """Whatever stage was running when the job stopped did not finish.
+
+    Leaving it marked "running" would show a job that failed ten minutes ago
+    as still working on something.
+    """
+    for entry in stages:
+        if entry.get("state") == "running":
+            entry["state"] = state
+    return stages
+
+
+def _failure_detail(exc: Exception) -> str:
+    """One sentence a person can act on.
+
+    A revision refused for a stated reason is not a crash, and should not be
+    reported as one.
+    """
+    if isinstance(exc, ReviseError):
+        return str(exc)
+    return "Job failed."
+
+
+def log_level_name(level: int) -> str:
+    """The four levels the console filters by.
+
+    The pipeline's own USER level (25) is what a person reads as progress,
+    so it is named for what it is rather than for where it sits.
+    """
+    if level >= logging.ERROR:
+        return "error"
+    if level >= logging.WARNING:
+        return "warning"
+    if level >= 25:
+        return "progress"
+    return "debug"
+
+
+class JobLogHandler(logging.Handler):
+    """Mirror a job's log into its folder and out to any open console.
+
+    The file is the record; the published line is the live view. Both come
+    from the same place, so what you watch and what you download agree.
+    """
+
+    def __init__(self, job_id: str, path: Path, publish) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.job_id = job_id
+        self.publish = publish
+        self.tail: deque = deque(maxlen=LOG_TAIL)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.stream = path.open("a", encoding="utf-8")
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = {
+                "t": datetime.now().strftime("%H:%M:%S"),
+                "level": log_level_name(record.levelno),
+                "text": record.getMessage(),
+            }
+        except Exception:
+            return
+        self.tail.append(line)
+        try:
+            self.stream.write(f"{line['t']} {line['level']:<8} {line['text']}\n")
+            self.stream.flush()
+        except Exception:
+            pass
+        try:
+            self.publish(self.job_id, line)
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        try:
+            self.stream.close()
+        finally:
+            super().close()
+
+
 @dataclass
 class JobStatus:
     id: str
@@ -84,9 +173,33 @@ class JobStatus:
     error: str = ""
     params: dict = field(default_factory=dict)
     result: dict = field(default_factory=dict)
+    # What this run is: a whole video, a revision of one block, or preparing
+    # a voice profile. They share the queue because they share the machine's
+    # one model slot.
+    kind: str = "video"
+    # Which version this run produced. A revision re-opens its own job id.
+    version: int = 1
+    # Takes found in the cache rather than generated. Counted separately so
+    # the progress figures stay honest on a resume, where the old code could
+    # report more takes done than the job has.
+    cached_takes: int = 0
+    # One entry per pipeline stage: {stage, state, seconds}. Measured, so the
+    # dashboard's stepper shows what each stage actually cost.
+    stages: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "JobStatus":
+        """Tolerant of fields this version does not know about.
+
+        status.json is the source of truth and is read back by every later
+        build. A strict constructor would make a job written by a newer
+        version vanish from the dashboard instead of showing what it can.
+        """
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 class SpeedProfile:
@@ -148,6 +261,7 @@ class JobManager:
         # publishing from write() means the stream cannot miss an update
         # that made it to disk.
         self._subscribers: list[queue.Queue] = []
+        self._log_handler: JobLogHandler | None = None
 
         self._recover()
 
@@ -175,6 +289,22 @@ class JobManager:
                 # allowed to block the worker thread.
                 self.unsubscribe(listener)
 
+    def _publish_log(self, job_id: str, line: dict) -> None:
+        """Send one log line to any open console.
+
+        It rides the same stream as status updates and is tagged, rather
+        than opening a second connection per job.
+        """
+        self._publish({"type": "log", "job_id": job_id, "line": line,
+                       **self.snapshot()})
+
+    def log_tail(self, job_id: str) -> list[dict]:
+        """Recent lines for a console that opens while a job is running."""
+        handler = self._log_handler
+        if handler is not None and handler.job_id == job_id:
+            return list(handler.tail)
+        return []
+
     def snapshot(self) -> dict:
         """What the top bar needs: who is running and how many are waiting."""
         with self._lock:
@@ -195,7 +325,8 @@ class JobManager:
         if not path.is_file():
             return None
         try:
-            return JobStatus(**json.loads(path.read_text(encoding="utf-8")))
+            return JobStatus.from_dict(
+                json.loads(path.read_text(encoding="utf-8")))
         except Exception:
             return None
 
@@ -285,21 +416,50 @@ class JobManager:
 
     def submit(self, name: str, params: dict, job_id: str | None = None) -> str:
         job_id = job_id or f"{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
+        previous = self.read(job_id) if job_id else None
         status = JobStatus(
             id=job_id, name=name, state=QUEUED,
-            created=datetime.now().isoformat(timespec="seconds"),
+            created=(previous.created if previous
+                     else datetime.now().isoformat(timespec="seconds")),
             params=params,
+            kind=params.get("kind", "video"),
             estimate_seconds=params.get("estimate_seconds", 0.0),
             total_takes=params.get("total_takes", 0),
+            # A revision re-opens the job it belongs to, so its history and
+            # its finished result stay available while it runs - the page
+            # keeps playing v1 until v2 exists.
+            result=previous.result if previous else {},
+            version=previous.version if previous else 1,
         )
         self.job_dir(job_id).mkdir(parents=True, exist_ok=True)
         self.write(status)
         with self._lock:
-            self._queue.append(job_id)
+            if job_id not in self._queue:
+                self._queue.append(job_id)
         self._renumber()
         self._wake.set()
         self.start()
         return job_id
+
+    def submit_revision(self, job_id: str, change: BlockChange) -> str:
+        """Queue a change to one block of a finished job.
+
+        It runs as the same job: same id, same folder, same live stream. The
+        single worker is what keeps one model in memory at a time, and a
+        revision loads models exactly as a first run does.
+        """
+        status = self.read(job_id)
+        if status is None:
+            raise ReviseError("That job no longer exists.")
+        if status.state in (QUEUED, RUNNING):
+            raise ReviseError(
+                "This job is still working. Wait for it to finish, or cancel "
+                "it, before changing a block.")
+
+        params = dict(status.params)
+        params["kind"] = "revise"
+        params["change"] = change.to_dict()
+        return self.submit(status.name, params, job_id=job_id)
 
     def resume(self, job_id: str) -> bool:
         status = self.read(job_id)
@@ -365,11 +525,29 @@ class JobManager:
         words = int(params.get("words", 0))
         takes = int(params.get("takes", 1))
 
-        state = {"done_takes": 0}
+        state = {"done_takes": 0, "cached": 0, "stage": "", "stage_at": started_at}
+
+        def close_stage(current: JobStatus, now: float) -> None:
+            """Record how long the stage that just ended actually took."""
+            if not state["stage"]:
+                return
+            for entry in current.stages:
+                if entry["stage"] == state["stage"]:
+                    entry["seconds"] = round(now - state["stage_at"], 1)
+                    entry["state"] = "done"
+                    break
 
         def progress(**kwargs) -> None:
             current = self.read(job_id) or status
+            now = time.perf_counter()
             stage = kwargs.get("stage", current.stage)
+            if stage != state["stage"]:
+                close_stage(current, now)
+                state["stage"], state["stage_at"] = stage, now
+                current.stages = [s for s in current.stages
+                                  if s["stage"] != stage]
+                current.stages.append(
+                    {"stage": stage, "state": "running", "seconds": 0.0})
             current.stage = stage
             current.detail = kwargs.get("detail") or STAGE_LABELS.get(stage, stage)
             if "block" in kwargs:
@@ -377,16 +555,25 @@ class JobManager:
                 current.blocks = kwargs.get("blocks", current.blocks)
                 current.take = kwargs.get("take", 0)
                 current.takes = kwargs.get("takes", 0)
-                state["done_takes"] += 1
-                current.done_takes = state["done_takes"]
+                # A cached take costs no time, so counting it as work done
+                # would both overstate progress and ruin the pace estimate.
+                # On a resume the old code reported more takes done than the
+                # job even had.
+                if kwargs.get("cached"):
+                    state["cached"] += 1
+                    current.cached_takes = state["cached"]
+                else:
+                    state["done_takes"] += 1
+                    current.done_takes = state["done_takes"]
             current.state = RUNNING
-            current.elapsed = time.perf_counter() - started_at
+            current.elapsed = now - started_at
 
             # Estimate from THIS run's measured pace once there is enough
             # of it to mean anything; fall back to the stored profile.
-            if current.done_takes >= 2 and current.total_takes:
+            generated = current.total_takes - current.cached_takes
+            if current.done_takes >= 2 and generated > 0:
                 per_take = current.elapsed / current.done_takes
-                left = max(0, current.total_takes - current.done_takes)
+                left = max(0, generated - current.done_takes)
                 current.remaining = max(0.0, per_take * left)
             elif current.estimate_seconds:
                 current.remaining = max(
@@ -395,65 +582,127 @@ class JobManager:
 
         log = agent_log.setup(self.cfg.log_dir, self.cfg.log_level,
                               run_name=f"job_{job_id}")
+        handler = JobLogHandler(job_id, job_dir / "job.log", self._publish_log)
+        log.addHandler(handler)
+        self._log_handler = handler
         try:
-            result = run_job(
-                Path(params["video"]), Path(params["script"]), self.cfg, log,
+            try:
+                result = self._do_work(job_id, params, job_dir, log, progress)
+            except JobCancelled:
+                status = self.read(job_id) or status
+                # A job stopped because the SERVER is going down was not
+                # abandoned by anyone - it is unfinished work, and saying
+                # "cancelled" would hide the fact that it can be resumed.
+                if self._stop.is_set():
+                    status.state = INTERRUPTED
+                    status.detail = ("The server stopped, so this job can be "
+                                     "resumed.")
+                    self.log.user(f"Job {job_id} interrupted (server stopped).")
+                else:
+                    status.state = CANCELLED
+                    status.detail = "Job cancelled."
+                    status.finished = datetime.now().isoformat(timespec="seconds")
+                    self.log.user(f"Job {job_id} cancelled.")
+                status.stages = _mark_open_stage(status.stages, "waiting")
+                self.write(status)
+                return
+            except Exception as exc:
+                status = self.read(job_id) or status
+                status.state = FAILED
+                status.error = f"{type(exc).__name__}: {exc}"
+                status.detail = _failure_detail(exc)
+                status.finished = datetime.now().isoformat(timespec="seconds")
+                status.stages = _mark_open_stage(status.stages, "failed")
+                self.write(status)
+                self.log.error(f"job {job_id} failed:\n{traceback.format_exc()}")
+                return
+
+            elapsed = time.perf_counter() - started_at
+            if words and takes and status.kind == "video":
+                self.speed.record(engine, words, takes, elapsed)
+
+            status = self.read(job_id) or status
+            close_stage(status, time.perf_counter())
+            status.state = DONE
+            status.stage = "done"
+            status.detail = "Complete."
+            status.finished = datetime.now().isoformat(timespec="seconds")
+            status.elapsed = elapsed
+            status.remaining = 0.0
+            status.version = versions.next_number(job_dir) - 1
+            status.result = self._result_for(job_dir, result)
+            self.write(status)
+            self.log.user(f"Job {job_id} complete ({elapsed:.0f}s).")
+        finally:
+            log.removeHandler(handler)
+            handler.close()
+            self._log_handler = None
+
+    # -- what a run actually does -----------------------------------------
+
+    def _do_work(self, job_id: str, params: dict, job_dir: Path, log,
+                 progress):
+        """One of three kinds of work, all sharing the single worker.
+
+        They queue together because they compete for the same thing: this
+        machine can hold one model in memory at a time. Preparing a voice
+        loads Chatterbox and ECAPA just as a job does, so letting it run
+        beside one would break the rule the whole design rests on.
+        """
+        kind = params.get("kind", "video")
+
+        if kind == "revise":
+            change = BlockChange.from_dict(params.get("change") or {})
+            return run_revision(
+                job_dir, change, self.cfg, log,
+                video=Path(params["video"]) if params.get("video") else None,
                 music=Path(params["music"]) if params.get("music") else None,
                 keep_original_audio=bool(params.get("keep_original_audio")),
                 burn_subs=bool(params.get("burn_subs")),
-                draft=bool(params.get("draft")),
                 engine=params.get("engine"),
-                job_dir=job_dir,
-                out_path=job_dir / "final.mp4",
-                progress=progress,
-                cancel=self.is_cancelled,
+                progress=progress, cancel=self.is_cancelled,
             )
-        except JobCancelled:
-            status = self.read(job_id) or status
-            # A job stopped because the SERVER is going down was not
-            # abandoned by anyone - it is unfinished work, and saying
-            # "cancelled" would hide the fact that it can be resumed.
-            if self._stop.is_set():
-                status.state = INTERRUPTED
-                status.detail = ("The server stopped, so this job can be "
-                                 "resumed.")
-                self.log.user(f"Job {job_id} interrupted (server stopped).")
-            else:
-                status.state = CANCELLED
-                status.detail = "Job cancelled."
-                status.finished = datetime.now().isoformat(timespec="seconds")
-                self.log.user(f"Job {job_id} cancelled.")
-            self.write(status)
-            return
-        except Exception as exc:
-            status = self.read(job_id) or status
-            status.state = FAILED
-            status.error = f"{type(exc).__name__}: {exc}"
-            status.detail = "Job failed."
-            status.finished = datetime.now().isoformat(timespec="seconds")
-            self.write(status)
-            self.log.error(f"job {job_id} failed:\n{traceback.format_exc()}")
-            return
 
-        elapsed = time.perf_counter() - started_at
-        if words and takes:
-            self.speed.record(engine, words, takes, elapsed)
+        if kind == "voice":
+            from agent.voice_profiles import prepare_profile
 
-        status = self.read(job_id) or status
-        status.state = DONE
-        status.stage = "done"
-        status.detail = "Complete."
-        status.finished = datetime.now().isoformat(timespec="seconds")
-        status.elapsed = elapsed
-        status.remaining = 0.0
-        status.result = {
+            return prepare_profile(
+                Path(params["recording"]), self.cfg,
+                name=params.get("name") or None,
+                engine=params.get("engine"), log=log,
+                progress=progress, cancel=self.is_cancelled,
+            )
+
+        return run_job(
+            Path(params["video"]), Path(params["script"]), self.cfg, log,
+            music=Path(params["music"]) if params.get("music") else None,
+            keep_original_audio=bool(params.get("keep_original_audio")),
+            burn_subs=bool(params.get("burn_subs")),
+            draft=bool(params.get("draft")),
+            engine=params.get("engine"),
+            job_dir=job_dir,
+            out_path=job_dir / "final.mp4",
+            progress=progress,
+            cancel=self.is_cancelled,
+        )
+
+    def _result_for(self, job_dir: Path, result) -> dict:
+        """What the finished job offers, always pointing at the newest
+        version so the jobs table and the overview need to know nothing
+        about versions at all."""
+        if not hasattr(result, "video"):          # a prepared voice profile
+            return {"profile": getattr(result, "name", ""),
+                    "best": getattr(result, "best", None)}
+
+        newest = versions.latest(job_dir)
+        report = result.report
+        return {
             "video": str(result.video) if result.video else None,
             "subtitles": str(result.subtitles) if result.subtitles else None,
             "timeline": str(result.timeline_json) if result.timeline_json else None,
-            "report": str(job_dir / f"{Path(params['video']).stem}_report.json"),
-            "qc_passed": bool(result.report.passed) if result.report else None,
-            "listen_to": result.report.listen_to if result.report else [],
+            "report": str(Path(job_dir) / newest.report) if newest and newest.report else None,
+            "qc_passed": bool(report.passed) if report else None,
+            "listen_to": report.listen_to if report else [],
             "warnings": result.warnings,
+            "version": newest.version if newest else 1,
         }
-        self.write(status)
-        self.log.user(f"Job {job_id} complete ({elapsed:.0f}s).")

@@ -54,7 +54,10 @@ def render_final(video: Path, timeline: Timeline, audio: Path, out_path: Path,
     gop = max(1, int(round(timeline.fps / cfg.final_gop_divisor)))
 
     common_out = [
-        "-c:a", "aac", "-b:a", cfg.final_audio_bitrate,
+        # AUDIO_CODEC was declared in config and ignored here, so changing it
+        # did nothing. Honour it; aac stays the default because it is what
+        # YouTube wants.
+        "-c:a", cfg.audio_codec or "aac", "-b:a", cfg.final_audio_bitrate,
         "-ar", str(cfg.final_audio_rate), "-ac", "2",
         "-movflags", "+faststart",
         "-t", f"{timeline.output_duration:.6f}",

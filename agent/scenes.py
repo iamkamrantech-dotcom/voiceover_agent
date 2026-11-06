@@ -107,6 +107,41 @@ class Detection:
             "scenes": [asdict(s) for s in self.scenes],
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Detection":
+        """Rebuild a Detection saved by a previous run.
+
+        Scene detection reads every frame of the video, so a revision that
+        only changes one block's narration must not pay for it again.
+        """
+        def transition(raw: dict | None) -> Transition | None:
+            return Transition(**raw) if raw else None
+
+        scenes = []
+        for raw in data.get("scenes", []):
+            raw = dict(raw)
+            raw["transition_in"] = transition(raw.get("transition_in"))
+            raw["transition_out"] = transition(raw.get("transition_out"))
+            scenes.append(Scene(**raw))
+
+        return cls(
+            video=data["video"],
+            fps=float(data["fps"]),
+            frame_count=int(data["frame_count"]),
+            duration=float(data["duration"]),
+            scenes=scenes,
+            transitions=[Transition(**t) for t in data.get("transitions", [])],
+        )
+
+    def save(self, path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        return path
+
+    @classmethod
+    def load(cls, path: Path) -> "Detection":
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
 
 # --------------------------------------------------------------------------
 # frame features
